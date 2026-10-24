@@ -22,8 +22,9 @@ final class GpuImage implements AutoCloseable {
         width = img.getWidth();
         height = img.getHeight();
         NativeImage pixels = new NativeImage(width, height, false);
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) pixels.setPixel(x, y, img.getRGB(x, y));
+        int[] argb = img.getRGB(0, 0, width, height, null, 0, width); // one bulk read instead of one call per pixel
+        for (int y = 0, i = 0; y < height; y++) {
+            for (int x = 0; x < width; x++, i++) pixels.setPixel(x, y, argb[i]);
         }
         DynamicTexture texture = new DynamicTexture(() -> "mcflow hud", pixels) {
             {
@@ -32,6 +33,11 @@ final class GpuImage implements AutoCloseable {
         };
         id = Identifier.fromNamespaceAndPath(McFlow.MODID, "hud/" + nextId++);
         Minecraft.getInstance().getTextureManager().register(id, texture);
+    }
+
+    /** The texture's name, for drawing it outside the GUI (pinned lyrics in the world). */
+    Identifier id() {
+        return id;
     }
 
     /** Draws at (x, y) in the current pose's units, tinted by ARGB {@code color} (use alpha to fade). */

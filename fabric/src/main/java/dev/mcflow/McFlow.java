@@ -2,9 +2,11 @@ package dev.mcflow;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -26,6 +28,13 @@ public class McFlow implements ClientModInitializer {
         Settings.load();
         NowPlaying.start();
         Beat.start();
+        ClientPlayNetworking.registerGlobalReceiver(SingAlong.PeerLine.TYPE, (line, ctx) -> PeerLyrics.receive(line));
+        PeerLyrics.sender = ClientPlayNetworking::send;
+        PeerLyrics.canSend = ClientPlayNetworking::canSend;
+        // pinned lyrics as real objects in the world ("Render in the world (3D)")
+        WorldText.supported = true;
+        WorldRenderEvents.AFTER_ENTITIES.register(ctx -> WorldText.render(ctx.matrices(), ctx.consumers()::getBuffer,
+                Minecraft.getInstance().gameRenderer.getMainCamera().position()));
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MODID, "lyrics"), new LyricsHud());
 
         KeyMapping.Category keys = KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MODID, "lyrics"));
@@ -33,6 +42,8 @@ public class McFlow implements ClientModInitializer {
         KeyMapping later = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.later", InputConstants.KEY_LBRACKET, keys));
         KeyMapping earlier = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.earlier", InputConstants.KEY_RBRACKET, keys));
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+            WorldFx.tick(mc);
+            PeerLyrics.tick(mc);
             while (settings.consumeClick()) mc.setScreen(new SettingsScreen(null));
             while (earlier.consumeClick()) nudge(NUDGE_MS);
             while (later.consumeClick()) nudge(-NUDGE_MS);

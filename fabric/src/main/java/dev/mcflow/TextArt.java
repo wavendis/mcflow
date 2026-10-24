@@ -23,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class TextArt {
     static final Color PILL_BORDER = new Color(255, 255, 255, 28);
     static final Color PILL_TEXT = new Color(230, 230, 240);
+    /** Padding at the pill's right end, as a share of its height (the equalizer sits just inside it). */
+    static final float PILL_RIGHT_PAD = 0.55f;
 
     private static final Font CAVEAT = loadFont("/assets/mcflow/caveat.ttf");
     private static final Font SYSTEM_UI = pickUiFont();
@@ -32,7 +34,8 @@ public final class TextArt {
     private TextArt() {}
 
     /** A word image plus where to place it: the glyphs start {@code pad} px in, the next word goes {@code advance} px on. */
-    public record Art(BufferedImage image, int pad, int advance) {}
+    /** {@code effects} is the outline/glow layer (same size and pad, drawn untinted underneath), or null without effects. */
+    public record Art(BufferedImage image, BufferedImage effects, int pad, int advance) {}
 
     /** Lyric word(s) in the chosen font, white (tinted when drawn) with a soft shadow, {@code px} tall. */
     public static Art word(String text, float px) {
@@ -58,7 +61,34 @@ public final class TextArt {
         g.setColor(Color.WHITE);
         g.drawString(text, pad, pad + fm.getAscent());
         g.dispose();
-        return new Art(out, pad, fm.stringWidth(text + " "));
+        return new Art(out, effects(text, font, fm, px, pad, w, h, mask), pad, fm.stringWidth(text + " "));
+    }
+
+    /**
+     * The outline and glow, on their own layer: the letter itself is tinted when drawn (lyric colour, beat flashes),
+     * but these keep their own colours.
+     */
+    private static BufferedImage effects(String text, Font font, FontMetrics fm, float px, int pad, int w, int h, BufferedImage mask) {
+        Settings s = Settings.get();
+        if (s.glow <= 0 && s.outline <= 0) return null;
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = smooth(out);
+        if (s.glow > 0) {
+            BufferedImage halo = blurAlpha(mask, Math.max(1, Math.round(px * 0.12f)));
+            int rgb = glowColor() & 0xFFFFFF;
+            float strength = 1.6f * Math.min(1, s.glow);
+            int[] glowPixels = pixels(halo);
+            for (int i = 0; i < glowPixels.length; i++) glowPixels[i] = Math.min(255, Math.round((glowPixels[i] >>> 24) * strength)) << 24 | rgb;
+            g.drawImage(halo, 0, 0, null);
+        }
+        if (s.outline > 0) {
+            java.awt.Shape shape = font.createGlyphVector(g.getFontRenderContext(), text).getOutline(pad, pad + fm.getAscent());
+            g.setColor(new Color(s.outlineColor));
+            g.setStroke(new java.awt.BasicStroke(px * s.outline, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+            g.draw(shape);
+        }
+        g.dispose();
+        return out;
     }
 
     /** Width of lyric text at a font size, to place letters one by one. */
@@ -71,13 +101,22 @@ public final class TextArt {
         return metrics(lyricFont().deriveFont(px)).getAscent();
     }
 
-    /** The now-playing pill: accent dot, the text, and {@code eqWidth} px of room on the right for the live equalizer. */
-    public static BufferedImage pill(String text, int height, int maxTextWidth, int eqWidth) {
+    /**
+     * The now-playing pill: the track's cover (or an accent dot without one), the text, and {@code eqWidth} px of
+     * room on the right for the live equalizer.
+     */
+    public static BufferedImage pill(String text, int height, int maxTextWidth, int eqWidth, BufferedImage cover) {
         Font font = uiFont().deriveFont(height * 0.42f);
         FontMetrics fm = metrics(font);
+        int inset = Math.round(height * 0.14f), art = height - 2 * inset;
         int padX = Math.round(height * 0.55f), dot = Math.round(height * 0.32f), gap = Math.round(height * 0.3f);
+        if (cover != null) {
+            padX = inset + Math.round(height * 0.04f); // the cover sits close to the rounded end
+            dot = art;
+        }
         String shown = fit(text, fm, maxTextWidth);
-        int w = padX + dot + gap + fm.stringWidth(shown) + (eqWidth > 0 ? gap + eqWidth : 0) + padX;
+        // the right end always has the same padding: the HUD places the live equalizer from it (PILL_RIGHT_PAD)
+        int w = padX + dot + gap + fm.stringWidth(shown) + (eqWidth > 0 ? gap + eqWidth : 0) + Math.round(height * PILL_RIGHT_PAD);
 
         BufferedImage img = new BufferedImage(w, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = smooth(img);
@@ -86,11 +125,57 @@ public final class TextArt {
         g.fill(shape);
         g.setColor(PILL_BORDER);
         g.draw(shape);
-        g.setColor(new Color(Settings.get().accent));
-        g.fillOval(padX, (height - dot) / 2, dot, dot);
+        if (cover != null) {
+            java.awt.Shape old = g.getClip();
+            g.clip(new RoundRectangle2D.Float(padX, inset, art, art, art * 0.5f, art * 0.5f));
+            g.drawImage(cover, padX, inset, art, art, null);
+            g.setClip(old);
+        } else {
+            g.setColor(new Color(Settings.get().accent));
+            g.fillOval(padX, (height - dot) / 2, dot, dot);
+        }
         g.setFont(font);
         g.setColor(PILL_TEXT);
         g.drawString(shown, padX + dot + gap, (height - fm.getHeight()) / 2 + fm.getAscent());
+        g.dispose();
+        return img;
+    }
+
+    /**
+     * The most striking colour of an image (for an accent picked from album art): pixels weighted by how saturated and
+     * bright they are, then nudged to stay vivid and readable on dark backgrounds.
+     */
+    public static int dominantColor(BufferedImage img) {
+        double r = 0, g = 0, b = 0, total = 0;
+        int step = Math.max(1, Math.max(img.getWidth(), img.getHeight()) / 48); // ~48x48 samples is plenty
+        float[] hsb = new float[3];
+        for (int y = 0; y < img.getHeight(); y += step) {
+            for (int x = 0; x < img.getWidth(); x += step) {
+                int rgb = img.getRGB(x, y);
+                Color.RGBtoHSB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, hsb);
+                double weight = hsb[1] * hsb[1] * hsb[2] + 0.001;
+                r += ((rgb >> 16) & 0xFF) * weight;
+                g += ((rgb >> 8) & 0xFF) * weight;
+                b += (rgb & 0xFF) * weight;
+                total += weight;
+            }
+        }
+        Color.RGBtoHSB((int) (r / total), (int) (g / total), (int) (b / total), hsb);
+        return Color.HSBtoRGB(hsb[0], Math.clamp(hsb[1] * 1.2f, 0.45f, 0.85f), Math.max(hsb[2], 0.85f)) & 0xFFFFFF;
+    }
+
+    /** A soft frame: clear in the middle, {@code color} towards the edges. Drawn small and stretched to the screen. */
+    public static BufferedImage vignette(int w, int h, int color) {
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = smooth(img);
+        Color edge = new Color(color);
+        // a circular gradient squashed to the image's shape, so it hugs all four edges equally
+        g.scale(w / (double) h, 1);
+        g.setPaint(new java.awt.RadialGradientPaint(h / 2f, h / 2f, h * 0.72f, new float[]{0, 0.55f, 1},
+                new Color[]{new Color(edge.getRed(), edge.getGreen(), edge.getBlue(), 0),
+                        new Color(edge.getRed(), edge.getGreen(), edge.getBlue(), 0),
+                        new Color(edge.getRed(), edge.getGreen(), edge.getBlue(), 220)}));
+        g.fillRect(0, 0, h, h);
         g.dispose();
         return img;
     }
@@ -109,27 +194,39 @@ public final class TextArt {
         g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
         g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC); // cover art shrinks smoothly
         return g;
     }
 
+    /** Font metrics are asked for per letter while laying out a line; making a Graphics each time was the slow part. */
+    private static final Map<Font, FontMetrics> METRICS = new ConcurrentHashMap<>();
+
     static FontMetrics metrics(Font font) {
-        Graphics2D g = smooth(new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB));
-        FontMetrics fm = g.getFontMetrics(font);
-        g.dispose();
-        return fm;
+        return METRICS.computeIfAbsent(font, f -> {
+            Graphics2D g = smooth(new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB));
+            FontMetrics fm = g.getFontMetrics(f);
+            g.dispose();
+            return fm;
+        });
+    }
+
+    /** The pixels of an ARGB image as a live array (no per-pixel getRGB/setRGB calls). */
+    static int[] pixels(BufferedImage img) {
+        return ((java.awt.image.DataBufferInt) img.getRaster().getDataBuffer()).getData();
     }
 
     /** Two box-blur passes over the alpha channel, roughly a gaussian. */
     private static BufferedImage blurAlpha(BufferedImage src, int r) {
         int w = src.getWidth(), h = src.getHeight();
-        int[] a = new int[w * h];
-        for (int i = 0; i < a.length; i++) a[i] = src.getRGB(i % w, i / w) >>> 24;
+        int[] in = pixels(src), a = new int[w * h];
+        for (int i = 0; i < a.length; i++) a[i] = in[i] >>> 24;
         for (int pass = 0; pass < 2; pass++) {
             a = boxBlur(a, w, h, r, true);
             a = boxBlur(a, w, h, r, false);
         }
         BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-        for (int i = 0; i < a.length; i++) out.setRGB(i % w, i / w, a[i] << 24);
+        int[] o = pixels(out);
+        for (int i = 0; i < a.length; i++) o[i] = a[i] << 24;
         return out;
     }
 
@@ -158,6 +255,13 @@ public final class TextArt {
             McFlow.LOGGER.warn("Couldn't load {}, using a system font", path, e);
             return new Font(Font.SANS_SERIF, Font.PLAIN, 12);
         }
+    }
+
+    /** The text glow's colour: the album cover's main colour when colours follow the album art, else the picked one. */
+    static int glowColor() {
+        Settings s = Settings.get();
+        Integer fromArt = s.albumArt && s.accentFromArt ? NowPlaying.coverColor() : null;
+        return fromArt != null ? fromArt : s.glowColor;
     }
 
     /** The lyric font picked in the settings. */

@@ -36,6 +36,12 @@ public final class SettingsPanel {
     private record Hit(Rectangle area, Runnable press, Drag drag, IntConsumer wheel) {}
 
     private final List<Hit> hits = new ArrayList<>();
+    /** Clipboard access, given by the screen (Minecraft's clipboard; Java's own doesn't work in the game). */
+    private Consumer<String> copy;
+    private java.util.function.Supplier<String> paste;
+    /** A short message in the footer ("copied!") and until when to show it. */
+    private String status;
+    private long statusUntil;
     private Hit dragging;
     private Rectangle hovered;
     private double mouseX = -1, mouseY = -1;
@@ -49,6 +55,16 @@ public final class SettingsPanel {
     private Graphics2D g;
     private int y;
 
+    public void clipboard(Consumer<String> copy, java.util.function.Supplier<String> paste) {
+        this.copy = copy;
+        this.paste = paste;
+    }
+
+    private void flash(String message) {
+        status = message;
+        statusUntil = System.currentTimeMillis() + 2500;
+    }
+
     public int x() {
         return panelX;
     }
@@ -58,7 +74,9 @@ public final class SettingsPanel {
     }
 
     public boolean needsRepaint(int w, int h) {
-        return dirty || w != lastW || h != lastH || Settings.version() != lastVersion;
+        boolean statusChanged = status != null && System.currentTimeMillis() > statusUntil;
+        if (statusChanged) status = null;
+        return dirty || statusChanged || w != lastW || h != lastH || Settings.version() != lastVersion;
     }
 
     public BufferedImage paint(int w, int h) {
@@ -72,7 +90,7 @@ public final class SettingsPanel {
         panelH = h - px(60);
         panelX = w - panelW - px(30);
         panelY = px(30);
-        headerH = px(112);
+        headerH = px(160);
         footerH = px(44);
 
         BufferedImage img = new BufferedImage(panelW, panelH, BufferedImage.TYPE_INT_ARGB);
@@ -90,6 +108,7 @@ public final class SettingsPanel {
         g.fillOval(pad, px(38), px(14), px(14));
         text("Mc'Flow", pad + px(26), px(52), font(26, Font.BOLD), TextArt.PILL_TEXT);
         text("Settings apply live and save automatically", pad, px(80), font(14, Font.PLAIN), DIM);
+        tabs(px(100));
 
         // scrolling content
         g.setClip(0, headerH, panelW, panelH - headerH - footerH);
@@ -104,34 +123,102 @@ public final class SettingsPanel {
         g.fillRect(pad, headerH - Math.max(1, px(1)), panelW - 2 * pad, Math.max(1, px(1)));
         // footer
         g.fillRect(pad, panelH - footerH, panelW - 2 * pad, Math.max(1, px(1)));
-        text("Esc to close  ·  scroll for more  ·  K opens this anytime", pad, panelH - px(17), font(13, Font.PLAIN), DIM);
+        if (status != null) text(status, pad, panelH - px(17), font(13, Font.BOLD), new Color(Settings.get().accent).brighter());
+        else text(maxScroll > 0 ? "Esc to close  ·  scroll for more  ·  K opens this anytime" : "Esc to close  ·  K opens this anytime",
+                pad, panelH - px(17), font(13, Font.PLAIN), DIM);
         g.dispose();
         return img;
     }
 
-    /** Everything on the panel, top to bottom. */
+    /** The tabs, in order; the panel shows one at a time. Remembered between openings. */
+    private static final String[] TABS = {"Look", "Motion", "Place", "Beat", "Pill", "More"};
+    private static int tab;
+
+    /** The current tab's controls, top to bottom. */
     private void content(Settings s) {
-        section("Lyrics");
+        switch (tab) {
+            case 0 -> lookTab(s);
+            case 1 -> motionTab(s);
+            case 2 -> placeTab(s);
+            case 3 -> beatTab(s);
+            case 4 -> pillTab(s);
+            default -> moreTab(s);
+        }
+        y += px(10);
+    }
+
+    private void lookTab(Settings s) {
+        section("Presets");
+        List<String> presets = Settings.PRESETS;
+        choice("", presets.subList(0, 3).toArray(String[]::new), -1, i -> Settings.applyPreset(presets.get(i)));
+        choice("", presets.subList(3, presets.size()).toArray(String[]::new), -1, i -> Settings.applyPreset(presets.get(3 + i)));
+        button("Copy share code", () -> {
+            if (copy != null) copy.accept(Settings.exportCode());
+            flash("Share code copied - send it to a friend");
+        });
+        y += px(8);
+        button("Paste share code", () -> flash(paste != null && Settings.importCode(paste.get()) ? "Style applied" : "No valid Mc'Flow code on the clipboard"));
+
+        section("Text");
         fontPicker("Font", s.lyricFont, f -> s.lyricFont = f);
         colorPicker("Colour", s.lyricColor, c -> s.lyricColor = c);
         slider("Size", s.lyricSize, 0.4f, 2.5f, 0.05f, String.format("%.2fx", s.lyricSize), v -> s.lyricSize = v);
         slider("Shadow", s.shadow, 0, 1, 0.05f, Math.round(s.shadow * 100) + "%", v -> s.shadow = v);
         slider("Letter spacing", s.letterSpacing, -0.05f, 0.4f, 0.01f, String.format("%+.2f", s.letterSpacing), v -> s.letterSpacing = v);
         toggle("Uppercase", s.uppercase, v -> s.uppercase = v);
+
+        section("Outline & glow");
+        slider("Outline", s.outline, 0, 0.2f, 0.01f, s.outline == 0 ? "none" : Math.round(s.outline * 100) + "%", v -> s.outline = v);
+        if (s.outline > 0) colorPicker("Outline colour", s.outlineColor, c -> s.outlineColor = c);
+        slider("Glow", s.glow, 0, 1, 0.05f, s.glow == 0 ? "none" : Math.round(s.glow * 100) + "%", v -> s.glow = v);
+        if (s.glow > 0 && !(s.albumArt && s.accentFromArt)) colorPicker("Glow colour", s.glowColor, c -> s.glowColor = c);
+        if (s.glow > 0 && s.albumArt && s.accentFromArt) hint("Glow colour follows the album art (Pill tab)");
+
+        section("Brackets & quotes");
+        toggle("Style text in (parentheses)", s.parenStyle, v -> s.parenStyle = v);
+        if (s.parenStyle) {
+            colorPicker("Colour", s.parenColor, c -> s.parenColor = c);
+            slider("Opacity", s.parenOpacity, 0.1f, 1, 0.05f, Math.round(s.parenOpacity * 100) + "%", v -> s.parenOpacity = v);
+        }
+        toggle("Style text in \"quotes\"", s.quoteStyle, v -> s.quoteStyle = v);
+        if (s.quoteStyle) {
+            colorPicker("Colour", s.quoteColor, c -> s.quoteColor = c);
+            slider("Opacity", s.quoteOpacity, 0.1f, 1, 0.05f, Math.round(s.quoteOpacity * 100) + "%", v -> s.quoteOpacity = v);
+        }
+    }
+
+    private void motionTab(Settings s) {
+        section("Reveal & fades");
         choice("Reveal", new String[]{"Word by word", "Whole line"}, s.reveal.ordinal(), i -> s.reveal = Settings.Reveal.values()[i]);
         slider("Fade in", s.fadeMs, 0, 1000, 10, s.fadeMs + " ms", v -> s.fadeMs = Math.round(v));
         slider("Fade out", s.fadeOutMs, 0, 2000, 10, s.fadeOutMs + " ms", v -> s.fadeOutMs = Math.round(v));
         choice("Fade out style", new String[]{"Whole line", "Word by word"}, s.fadeOut.ordinal(), i -> s.fadeOut = Settings.FadeOut.values()[i]);
         toggle("Float in and drift away", s.floatUp, v -> s.floatUp = v);
 
-        section("Placement");
-        choice("Where", new String[]{"Around you", "Pinned", "On screen"}, s.placement.ordinal(), i -> s.placement = Settings.Placement.values()[i]);
-        choice("Layout", new String[]{"Staggered", "Centered", "One line"}, s.layout.ordinal(), i -> s.layout = Settings.Layout.values()[i]);
+        section("Animation");
+        choice("Appear", new String[]{"Fade", "Type", "Bounce", "Pop", "Glitch"}, s.appear.ordinal(), i -> s.appear = Settings.Appear.values()[i]);
+        choice("While shown", new String[]{"Still", "Wave", "Float"}, s.idle.ordinal(), i -> s.idle = Settings.Idle.values()[i]);
+        choice("Leave", new String[]{"Fade", "Scatter", "Fall", "Burn"}, s.exit.ordinal(), i -> s.exit = Settings.Exit.values()[i]);
+    }
+
+    private void placeTab(Settings s) {
+        section("Where");
+        choice("", new String[]{"Around you", "Pinned", "On screen"}, s.placement.ordinal(), i -> s.placement = Settings.Placement.values()[i]);
+        hint(switch (s.placement) {
+            case WORLD -> "On a sphere around you: stays where it appeared when you turn";
+            case PINNED -> "A sign standing in the world: walk up to it, around it";
+            case SCREEN -> "Fixed on the screen, like a classic HUD";
+        });
+
+        section("Layout");
+        choice("", new String[]{"Staggered", "Centered", "One line"}, s.layout.ordinal(), i -> s.layout = Settings.Layout.values()[i]);
         if (s.layout == Settings.Layout.STAGGERED) {
             choice("First row on", new String[]{"Left", "Right"}, s.firstRowRight ? 1 : 0, i -> s.firstRowRight = i == 1);
             String spread = s.rowSpread >= 0.4f ? "opposite sides" : "gap " + Math.round(s.rowSpread * 100) + "% each side";
             slider("Row spread", s.rowSpread, 0, 0.45f, 0.005f, spread, v -> s.rowSpread = v);
         }
+
+        section("Position");
         boolean world = s.placement != Settings.Placement.SCREEN;
         float side = world ? s.worldYaw / 40f : (s.screenX - 0.5f) / 0.25f; // -1 left, 0 centre, 1 right
         choice("Side", new String[]{"Left", "Center", "Right"}, Math.round(Math.clamp(side, -1, 1)) + 1, i -> {
@@ -141,39 +228,100 @@ public final class SettingsPanel {
         if (world) {
             slider("Angle from view", s.worldYaw, -90, 90, 1, Math.round(s.worldYaw) + "°", v -> s.worldYaw = v);
             slider("Height", s.worldRaise, -40, 60, 1, Math.round(s.worldRaise) + "°", v -> s.worldRaise = v);
-            if (s.placement == Settings.Placement.PINNED) {
-                slider("Distance", s.pinDistance, 4, 48, 1, Math.round(s.pinDistance) + " blocks", v -> s.pinDistance = v);
-                slider("Warp up close", s.warp, 0, 1, 0.05f, s.warp == 0 ? "flat" : Math.round(s.warp * 100) + "%", v -> s.warp = v);
-            }
         } else {
             slider("Horizontal", s.screenX, 0, 1, 0.01f, Math.round(s.screenX * 100) + "%", v -> s.screenX = v);
             slider("Vertical", s.screenY, 0, 1, 0.01f, Math.round(s.screenY * 100) + "%", v -> s.screenY = v);
         }
 
+        if (s.placement == Settings.Placement.PINNED) {
+            section("Pinned sign");
+            slider("Distance", s.pinDistance, 4, 48, 1, Math.round(s.pinDistance) + " blocks", v -> s.pinDistance = v);
+            if (WorldText.supported) toggle("Render in the world (3D)", s.realWorld, v -> s.realWorld = v);
+            slider("Warp up close", s.warp, 0, 1, 0.05f, s.warp == 0 ? "flat" : Math.round(s.warp * 100) + "%", v -> s.warp = v);
+        }
+
+        section("Depth");
         if (world) toggle("Block detection (walls, glass, water)", s.blockDetection, v -> s.blockDetection = v);
         slider("Parallax", s.parallax, 0, 1, 0.05f, s.parallax == 0 ? "off" : Math.round(s.parallax * 100) + "%", v -> s.parallax = v);
+    }
+
+    private void beatTab(Settings s) {
+        section("Pulse");
+        choice("", new String[]{"Off", "Nouns", "All words"}, s.pulse.ordinal(), i -> s.pulse = Settings.Pulse.values()[i]);
+        hint("Sung sounds like \"oh\" and \"ah\" always pulse");
+        slider("Strength", s.pulseStrength, 0, 3, 0.1f, String.format("%.1fx", s.pulseStrength), v -> s.pulseStrength = v);
+        colorPicker("Pulse colour", s.pulseColor, c -> s.pulseColor = c);
+
+        section("Drops");
+        toggle("Flash, shake and pop when the music drops", s.dropEffect, v -> s.dropEffect = v);
+        if (s.dropEffect) slider("Intensity", s.dropIntensity, 0.2f, 2, 0.1f, String.format("%.1fx", s.dropIntensity), v -> s.dropIntensity = v);
+
+        section("World");
+        choice("Particles on beats", new String[]{"Off", "Notes", "Sparkles", "Glow"}, s.beatParticles.ordinal(), i -> s.beatParticles = Settings.Particles.values()[i]);
+        slider("Screen edge glow", s.edgeGlow, 0, 1, 0.05f, s.edgeGlow == 0 ? "off" : Math.round(s.edgeGlow * 100) + "%", v -> s.edgeGlow = v);
+    }
+
+    private void pillTab(Settings s) {
+        section("Now playing pill");
+        toggle("Show pill", s.showPill, v -> s.showPill = v);
+        choice("Position", new String[]{"Top", "Bottom"}, s.pillAtBottom ? 1 : 0, i -> s.pillAtBottom = i == 1);
+        toggle("Equalizer", s.equalizer, v -> s.equalizer = v);
+
+        section("Album art");
+        toggle("Show album art", s.albumArt, v -> s.albumArt = v);
+        if (s.albumArt) toggle("Colours from album art (accent, glow)", s.accentFromArt, v -> s.accentFromArt = v);
+
+        section("Style");
+        fontPicker("Font", s.uiFont, f -> s.uiFont = f);
+        if (!(s.albumArt && s.accentFromArt)) colorPicker("Accent", s.accent, c -> s.accent = c);
+        slider("Background", s.pillOpacity, 0, 1, 0.05f, Math.round(s.pillOpacity * 100) + "%", v -> s.pillOpacity = v);
+    }
+
+    private void moreTab(Settings s) {
+        section("Music");
+        sourcePicker(s);
+        slider("Timing offset", s.offsetMs, -3000, 3000, 50, (s.offsetMs > 0 ? "+" : "") + s.offsetMs + " ms  ([ / ] keys)", v -> s.offsetMs = Math.round(v));
+
+        section("Multiplayer");
+        toggle("Share my lyrics with nearby players", s.shareLyrics, v -> s.shareLyrics = v);
+        toggle("Show other players' lyrics", s.showOthers, v -> s.showOthers = v);
+        hint("Needs Mc'Flow on the server (or the host in LAN)");
 
         section("Menus");
         toggle("Blur and dim behind menus", s.menuBlur, v -> s.menuBlur = v);
 
-        section("Beat effects");
-        choice("Pulse", new String[]{"Off", "Nouns", "All words"}, s.pulse.ordinal(), i -> s.pulse = Settings.Pulse.values()[i]);
-        slider("Strength", s.pulseStrength, 0, 3, 0.1f, String.format("%.1fx", s.pulseStrength), v -> s.pulseStrength = v);
-        colorPicker("Pulse colour", s.pulseColor, c -> s.pulseColor = c);
-
-        section("Now playing pill");
-        toggle("Show pill", s.showPill, v -> s.showPill = v);
-        choice("Position", new String[]{"Top", "Bottom"}, s.pillAtBottom ? 1 : 0, i -> s.pillAtBottom = i == 1);
-        fontPicker("Font", s.uiFont, f -> s.uiFont = f);
-        colorPicker("Accent", s.accent, c -> s.accent = c);
-        slider("Background", s.pillOpacity, 0, 1, 0.05f, Math.round(s.pillOpacity * 100) + "%", v -> s.pillOpacity = v);
-        toggle("Equalizer", s.equalizer, v -> s.equalizer = v);
-
-        section("Timing");
-        slider("Offset", s.offsetMs, -3000, 3000, 50, (s.offsetMs > 0 ? "+" : "") + s.offsetMs + " ms  ([ / ] keys)", v -> s.offsetMs = Math.round(v));
-        y += px(10);
+        section("Reset");
         button("Reset everything to default", Settings::reset);
-        y += px(10);
+    }
+
+    /** A small grey note under a control. */
+    private void hint(String text) {
+        text(text, pad, y + px(14), font(12, Font.PLAIN), DIM);
+        y += px(24);
+    }
+
+    /** The tab row under the title; it stays put while the content scrolls. */
+    private void tabs(int top) {
+        int h = px(38), x0 = pad, w = panelW - 2 * pad, segW = w / TABS.length;
+        g.setColor(TRACK);
+        g.fill(new RoundRectangle2D.Float(x0, top, w, h, h, h));
+        Font f = font(14, Font.BOLD);
+        for (int i = 0; i < TABS.length; i++) {
+            int sx = x0 + i * segW, index = i;
+            Rectangle seg = new Rectangle(sx, top, segW, h);
+            hits.add(new Hit(seg, () -> {
+                if (tab != index) {
+                    tab = index;
+                    scroll = 0;
+                }
+            }, null, null));
+            if (i == tab || isHovered(seg)) {
+                g.setColor(i == tab ? new Color(Settings.get().accent) : HOVER);
+                g.fill(new RoundRectangle2D.Float(sx + px(3), top + px(3), segW - px(6), h - px(6), h - px(6), h - px(6)));
+            }
+            int tw = metrics(f).stringWidth(TABS[i]);
+            text(TABS[i], sx + (segW - tw) / 2, top + h / 2 + metrics(f).getAscent() / 2 - px(2), f, i == tab ? Color.WHITE : TextArt.PILL_TEXT);
+        }
     }
 
     // ---- controls ----
@@ -224,8 +372,12 @@ public final class SettingsPanel {
     }
 
     private void choice(String label, String[] options, int selected, IntConsumer set) {
-        text(label, pad, y + px(26), font(16, Font.PLAIN), TextArt.PILL_TEXT);
-        y += px(38);
+        if (label.isEmpty()) {
+            y += px(6); // a bare row of buttons (presets)
+        } else {
+            text(label, pad, y + px(26), font(16, Font.PLAIN), TextArt.PILL_TEXT);
+            y += px(38);
+        }
         int h = px(36), x0 = pad, w = panelW - 2 * pad, segW = w / options.length;
         g.setColor(TRACK);
         g.fill(new RoundRectangle2D.Float(x0, y, w, h, h, h));
@@ -287,11 +439,28 @@ public final class SettingsPanel {
     }
 
     private void fontPicker(String label, String value, Consumer<String> set) {
+        List<String> fonts = TextArt.families();
+        // the name is written in the font itself
+        picker(label, fonts, fonts, fonts.indexOf(value), set, TextArt.font(value, TextArt.uiFont()),
+                "Click or scroll to browse " + fonts.size() + " fonts");
+    }
+
+    /** Which app's music to follow: Auto (whatever Windows says is playing) or one of the apps seen playing media. */
+    private void sourcePicker(Settings s) {
+        List<String> ids = new ArrayList<>(List.of(""));
+        for (String app : NowPlaying.apps()) if (!ids.contains(app)) ids.add(app);
+        if (!ids.contains(s.musicSource)) ids.add(s.musicSource); // keep a chosen app listed even while it's closed
+        List<String> names = ids.stream().map(id -> id.isEmpty() ? "Auto (current app)" : NowPlaying.appName(id)).toList();
+        picker("Music from", ids, names, ids.indexOf(s.musicSource), v -> s.musicSource = v, TextArt.uiFont(),
+                ids.size() > 2 ? "Click or scroll to pick an app" : "Open another media app to choose between them");
+    }
+
+    /** A box with ‹ › arrows that steps through {@code values} (showing {@code shown}), by click or mouse wheel. */
+    private void picker(String label, List<String> values, List<String> shown, int index, Consumer<String> set, Font sampleFont, String hint) {
         text(label, pad, y + px(26), font(16, Font.PLAIN), TextArt.PILL_TEXT);
         y += px(36);
-        List<String> fonts = TextArt.families();
-        int index = Math.max(0, fonts.indexOf(value));
-        IntConsumer step = d -> apply(() -> set.accept(fonts.get(Math.floorMod(index + d, fonts.size()))));
+        int at = Math.max(0, index);
+        IntConsumer step = d -> apply(() -> set.accept(values.get(Math.floorMod(at + d, values.size()))));
         int h = px(44), x0 = pad, w = panelW - 2 * pad, arrow = px(44);
         Rectangle box = new Rectangle(x0, y, w, h);
         g.setColor(isHovered(box) ? new Color(255, 255, 255, 46) : TRACK);
@@ -302,13 +471,12 @@ public final class SettingsPanel {
         Font arrows = font(20, Font.BOLD);
         text("‹", x0 + px(16), y + px(30), arrows, DIM);
         text("›", x0 + w - px(26), y + px(30), arrows, DIM);
-        // the name is written in the font itself
-        Font sample = TextArt.font(value, TextArt.uiFont()).deriveFont(px(19) * 1f);
-        String name = fit(value, sample, w - 2 * arrow);
+        Font sample = sampleFont.deriveFont(px(19) * 1f);
+        String name = fit(shown.get(at), sample, w - 2 * arrow);
         int tw = metrics(sample).stringWidth(name);
         text(name, x0 + (w - tw) / 2, y + h / 2 + metrics(sample).getAscent() / 2 - px(3), sample, Color.WHITE);
         y += h + px(6);
-        text("Click or scroll to browse " + fonts.size() + " fonts", pad, y + px(14), font(12, Font.PLAIN), DIM);
+        text(hint, pad, y + px(14), font(12, Font.PLAIN), DIM);
         y += px(24);
     }
 

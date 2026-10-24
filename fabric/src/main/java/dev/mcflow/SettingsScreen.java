@@ -24,6 +24,7 @@ public class SettingsScreen extends Screen {
     @Override
     protected void init() {
         LyricsHud.preview = true;
+        panel.clipboard(text -> minecraft.keyboardHandler.setClipboard(text), () -> minecraft.keyboardHandler.getClipboard());
     }
 
     @Override

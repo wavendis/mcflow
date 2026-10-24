@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import org.joml.Matrix3x2f;
 import org.joml.Vector3f;
 
+import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -30,12 +31,16 @@ public final class LyricsHud implements HudElement {
     /** One letter of a lyric line. */
     private static final class Glyph {
         final GpuImage image;
+        /** Outline/glow layer drawn untinted under the letter, or null. */
+        GpuImage effects;
         final Lyrics.Word word;
         final WordState state;
         /** Part of a noun: pulses with the beat when pulses are set to nouns. */
         final boolean noun;
         /** Part of a sung sound like "oh" or "ah": always pulses with the beat. */
         final boolean vocal;
+        /** Inside (parentheses) or "quotes": {@link Lyrics#IN_PARENS}, {@link Lyrics#IN_QUOTES} or {@link Lyrics#PLAIN}. */
+        final int span;
         /** Which word of the line it's in, for fading out word by word. */
         final int order;
         /** Depth layer for parallax: the same for a whole row; staggered rows sit at two depths, other layouts at one. */
@@ -51,12 +56,13 @@ public final class LyricsHud implements HudElement {
         float occlusion = -1, tintAmount;
         int tint = 0xFFFFFF;
 
-        Glyph(GpuImage image, Lyrics.Word word, WordState state, boolean noun, boolean vocal, int order, float layer, float across, float up, float lx, float ly) {
+        Glyph(GpuImage image, Lyrics.Word word, WordState state, boolean noun, boolean vocal, int span, int order, float layer, float across, float up, float lx, float ly) {
             this.image = image;
             this.word = word;
             this.state = state;
             this.noun = noun;
             this.vocal = vocal;
+            this.span = span;
             this.order = order;
             this.layer = layer;
             this.across = across;
@@ -72,6 +78,8 @@ public final class LyricsHud implements HudElement {
         boolean seen, gone;
         /** This frame: the most visible of its letters. */
         float view;
+        /** Layout x of the word's first letter (typewriter animation). */
+        float firstX = Float.NaN;
     }
 
     /** One lyric line being shown, laid out and pinned where the player was looking when it appeared. */
@@ -102,10 +110,6 @@ public final class LyricsHud implements HudElement {
             this.version = version;
             this.height = height;
         }
-
-        void close() {
-            glyphs.forEach(gl -> gl.image.close());
-        }
     }
 
     /**
@@ -130,6 +134,10 @@ public final class LyricsHud implements HudElement {
     private static final float MEAN_LAYER = 0.9f;
     /** Behind menus: how much the text dims, and how far it blurs (share of screen height). */
     private static final float MENU_DIM = 0.65f, MENU_BLUR = 0.004f;
+    /** Lyric text heights as a share of the screen height: first/only row, and the second row when centered. */
+    private static final float BIG_TEXT = 0.085f, SMALL_TEXT = 0.065f;
+    /** Typewriter: how long each letter takes to type in. */
+    private static final float TYPE_MS = 45;
     /** When fading out word by word, each word starts this much after the one before. */
     private static final long WORD_OUT_STAGGER_MS = 70;
 
@@ -147,8 +155,12 @@ public final class LyricsHud implements HudElement {
     private String pillKey = "";
     private long pillFrameNanos;
     private final float[] eqLevels = new float[3];
+    /** Which song/size the letters were last prepared for. */
+    private String preparedFor = "";
     /** 0..1 how far the lyrics are softened because a menu is open; and this frame's dimming and blur radius (px). */
     private float menuFade, dim = 1, blurPx;
+    private GpuImage glow;
+    private int glowColor;
     private long menuFrameNanos;
     /** Lines on screen right now: usually one, two while one fades out and the next fades in. */
     private final Map<Lyrics.Line, View> views = new IdentityHashMap<>();
@@ -160,6 +172,7 @@ public final class LyricsHud implements HudElement {
         List<Lyrics.Line> lines = Lyrics.current();
         long pos = NowPlaying.positionMs() + s.offsetMs;
         updateMenuFade(s);
+        WorldText.begin();
         boolean playing = NowPlaying.playing();
         if (preview && (track == null || lines.isEmpty())) {
             track = DEMO_TRACK;
@@ -167,6 +180,9 @@ public final class LyricsHud implements HudElement {
             pos = System.currentTimeMillis() % 16_000;
             playing = true;
         }
+        drawPeers(g);
+        GlyphCache.uploadSome(4); // a few per frame keeps the upload work invisible
+        if (track != null) prepareLetters(lines, s);
         if (track == null) {
             closeViews(List.of());
             return;
@@ -178,6 +194,7 @@ public final class LyricsHud implements HudElement {
         g.pose().pushMatrix();
         g.pose().scale(px, px); // 1 unit = 1 physical pixel from here on
 
+        drawEdgeGlow(g, w, h, s);
         if (s.showPill) drawPill(g, w, h, window.getGuiScale(), track, playing);
 
         // every line that's fading in, showing or fading out; older ones first so the newest is on top
@@ -192,7 +209,6 @@ public final class LyricsHud implements HudElement {
             Lyrics.Line line = visible.get(k);
             View view = views.get(line);
             if (view == null || view.version != Settings.version() || view.height != h) {
-                if (view != null) view.close();
                 view = layout(line, camera, w, h);
                 views.put(line, view);
             }
@@ -204,6 +220,43 @@ public final class LyricsHud implements HudElement {
             }
             drawLine(g, w, h, view, camera, pos, push);
         }
+        // drop: a quick white flash over everything
+        float drop = s.dropEffect ? Beat.drop() : 0;
+        int flash = Math.round(drop * drop * drop * 0.3f * s.dropIntensity * 255 * dim);
+        if (flash > 2) g.fill(0, 0, w, h, Math.min(255, flash) << 24 | 0xFFFFFF);
+        g.pose().popMatrix();
+    }
+
+    /** The accent colour: the album cover's main colour when that's switched on, else the one picked in settings. */
+    private static int accent() {
+        Settings s = Settings.get();
+        Integer fromArt = s.albumArt && s.accentFromArt ? NowPlaying.coverColor() : null;
+        return fromArt != null ? fromArt : s.accent;
+    }
+
+    /** The screen edges glow in the accent colour on beats, much stronger on drops. */
+    private void drawEdgeGlow(GuiGraphics g, int w, int h, Settings s) {
+        float strength = s.edgeGlow * (Beat.pulse() * 0.6f + (s.dropEffect ? Beat.drop() * s.dropIntensity : 0));
+        int alpha = Math.round(Math.min(1, strength) * 255 * dim);
+        if (alpha < 3) return;
+        int accent = accent();
+        if (glow == null || glowColor != accent) {
+            if (glow != null) glow.close();
+            glow = new GpuImage(TextArt.vignette(320, 180, accent)); // small; smooth filtering stretches it
+            glowColor = accent;
+        }
+        g.pose().pushMatrix();
+        g.pose().scale(w / (float) glow.width, h / (float) glow.height);
+        glow.draw(g, 0, 0, alpha << 24 | 0xFFFFFF);
+        g.pose().popMatrix();
+    }
+
+    /** Other players' lines above their heads (multiplayer sing-along), even when you're not playing anything. */
+    private static void drawPeers(GuiGraphics g) {
+        Window window = Minecraft.getInstance().getWindow();
+        g.pose().pushMatrix();
+        g.pose().scale(1f / window.getGuiScale(), 1f / window.getGuiScale());
+        PeerLyrics.draw(g, window.getWidth(), window.getHeight(), Minecraft.getInstance().gameRenderer.getMainCamera());
         g.pose().popMatrix();
     }
 
@@ -222,17 +275,28 @@ public final class LyricsHud implements HudElement {
         blurPx = Minecraft.getInstance().getWindow().getHeight() * MENU_BLUR * menuFade;
     }
 
+    /**
+     * When a song's lyrics (or the text size) change, draws every letter the song uses in the background, so lines
+     * can appear without any drawing work.
+     */
+    private void prepareLetters(List<Lyrics.Line> lines, Settings s) {
+        int h = Minecraft.getInstance().getWindow().getHeight();
+        String key = System.identityHashCode(lines) + "|" + h + "|" + s.lyricSize + "|" + s.layout + "|" + s.uppercase;
+        if (key.equals(preparedFor)) return;
+        preparedFor = key;
+        List<String> texts = lines.stream().map(l -> s.uppercase ? l.text().toUpperCase(Locale.ROOT) : l.text()).toList();
+        java.util.Collection<String> letters = GlyphCache.letters(texts);
+        GlyphCache.prepare(letters, h * BIG_TEXT * s.lyricSize * RES);
+        if (s.layout == Settings.Layout.CENTERED) GlyphCache.prepare(letters, h * SMALL_TEXT * s.lyricSize * RES);
+    }
+
     private static long fadeOutTotal(Lyrics.Line line, Settings s) {
         return s.fadeOutMs + (s.fadeOut == Settings.FadeOut.WORDS ? (line.words().size() - 1) * WORD_OUT_STAGGER_MS : 0);
     }
 
-    /** Frees the textures of lines that are no longer shown. */
+    /** Forgets lines that are no longer shown (their letters stay cached in {@link GlyphCache}). */
     private void closeViews(List<Lyrics.Line> keep) {
-        views.entrySet().removeIf(e -> {
-            if (keep.stream().anyMatch(l -> l == e.getKey())) return false;
-            e.getValue().close();
-            return true;
-        });
+        views.keySet().removeIf(line -> keep.stream().noneMatch(l -> l == line));
     }
 
     /** The pill: just what's playing (title · artist), with the beat equalizer on the right. */
@@ -248,10 +312,11 @@ public final class LyricsHud implements HudElement {
         // channel "Lost Panda" shows as "California Gurls · Katy Perry"
         String[] song = Lyrics.guesses(track.artist(), track.title()).getFirst();
         String text = song[0].isEmpty() ? song[1] : song[1] + "  ·  " + song[0];
-        String key = text + "|" + height + "|" + w + "|" + Settings.version();
+        BufferedImage cover = s.albumArt ? NowPlaying.cover() : null;
+        String key = text + "|" + height + "|" + w + "|" + Settings.version() + "|" + System.identityHashCode(cover);
         if (!key.equals(pillKey)) {
             if (pill != null) pill.close();
-            pill = new GpuImage(TextArt.pill(text, height, Math.round(w * 0.45f), eqWidth));
+            pill = new GpuImage(TextArt.pill(text, height, Math.round(w * 0.45f), eqWidth, cover));
             pillKey = key;
         }
 
@@ -259,7 +324,7 @@ public final class LyricsHud implements HudElement {
         // at the bottom it sits above the hotbar (22 GUI pixels tall) instead of on it
         int y = s.pillAtBottom ? h - height - Math.round(32 * guiScale) : Math.round(h * 0.014f);
         pill.drawSoft(g, x, y, Math.round(255 * dim) << 24 | 0xFFFFFF, blurPx, menuFade);
-        if (s.equalizer) drawEqualizer(g, x + pill.width - Math.round(height * 0.55f) - eqWidth, y + height / 2, height, eqWidth, playing, dt);
+        if (s.equalizer) drawEqualizer(g, x + pill.width - Math.round(height * TextArt.PILL_RIGHT_PAD) - eqWidth, y + height / 2, height, eqWidth, playing, dt);
     }
 
     /** Three bars driven by the music: bass loudness, the beat, and a mix, easing so they bounce rather than flicker. */
@@ -267,7 +332,7 @@ public final class LyricsHud implements HudElement {
         float energy = Beat.energy(), beat = Beat.pulse();
         float[] target = playing ? new float[]{energy, Math.max(beat, energy * 0.6f), energy * 0.5f + beat * 0.6f} : new float[3];
         float ease = 1 - (float) Math.exp(-dt / 60);
-        int barW = Math.max(2, eqWidth / 5), color = Math.round(255 * dim) << 24 | (Settings.get().accent & 0xFFFFFF);
+        int barW = Math.max(2, eqWidth / 5), color = Math.round(255 * dim) << 24 | (accent() & 0xFFFFFF);
         for (int b = 0; b < 3; b++) {
             eqLevels[b] += (Math.clamp(target[b], 0, 1) - eqLevels[b]) * ease;
             int bh = Math.max(2, Math.round(height * (0.12f + 0.46f * eqLevels[b])));
@@ -285,6 +350,7 @@ public final class LyricsHud implements HudElement {
     private void drawLine(GuiGraphics g, int w, int h, View v, Camera camera, long pos, float push) {
         Settings s = Settings.get();
         Settings.Placement mode = s.placement;
+        boolean world3d = mode == Settings.Placement.PINNED && s.realWorld && WorldText.supported;
         float edge = h * EDGE_FADE;
         // first find where every letter is and how visible each whole word is
         // how far the view has turned since the line appeared (degrees), for parallax; capped so a full spin stays sane
@@ -304,12 +370,13 @@ public final class LyricsHud implements HudElement {
                     : new float[]{s.screenX * w + gl.lx - turnYaw * h / 90f * gl.layer * lag,
                     s.screenY * h + gl.ly - push - turnPitch * h / 90f * gl.layer * lag, 0, 0};
             gl.screen = p;
-            occlude(gl, s, camera, world, p != null);
+            if (world3d) gl.occlusion = 1; // the depth buffer hides it now
+            else occlude(gl, s, camera, world, p != null);
             if (mode == Settings.Placement.SCREEN) {
                 gl.view = 1;
             } else {
                 // 0 behind the player or off screen; fades near the edges (and, pinned, when you walk into it)
-                gl.view = p == null ? 0 : Math.clamp(Math.min(Math.min(p[0], w - p[0]), Math.min(p[1], h - p[1])) / edge, 0f, 1f);
+                gl.view = p == null ? 0 : world3d ? 1 : Math.clamp(Math.min(Math.min(p[0], w - p[0]), Math.min(p[1], h - p[1])) / edge, 0f, 1f);
                 if (p != null && mode == Settings.Placement.PINNED) gl.view *= (float) Math.clamp((p[3] - NEAR_HIDE) / (NEAR_FULL - NEAR_HIDE), 0, 1);
             }
             gl.state.view = Math.max(gl.state.view, gl.view);
@@ -320,9 +387,15 @@ public final class LyricsHud implements HudElement {
             WordState word = gl.state;
             long appearAt = s.reveal == Settings.Reveal.LINE ? v.line.startMs() : gl.word.startMs();
             long leaveAt = v.line.endMs() + (s.fadeOut == Settings.FadeOut.WORDS ? gl.order * WORD_OUT_STAGGER_MS : 0);
-            float in = Math.clamp((pos + s.fadeMs - appearAt) / fadeIn, 0f, 1f);
+            float in = s.appear == Settings.Appear.TYPEWRITER
+                    // letter by letter, left to right, each snapping in quickly
+                    ? Math.clamp((pos + s.fadeMs - appearAt - (gl.lx - word.firstX) / (h * 0.035f) * TYPE_MS) / TYPE_MS, 0f, 1f)
+                    : Math.clamp((pos + s.fadeMs - appearAt) / fadeIn, 0f, 1f);
             float out = 1 - Math.clamp((pos - leaveAt) / fadeOut, 0f, 1f);
-            float a = in * out;
+            float a = (s.appear == Settings.Appear.BOUNCE ? Math.min(1, in * 2) : in) * out;
+            // a glitching letter flickers while it arrives
+            float noise = noise(gl, 1);
+            if (s.appear == Settings.Appear.GLITCH && in < 1 && noise > 0.2f) a *= 0.25f;
             if (mode != Settings.Placement.SCREEN) {
                 if (a >= 1 && word.view >= 0.5f) word.seen = true;
                 // once a shown word has completely left view it stays gone, even if you look back; part-visible words stay
@@ -331,20 +404,69 @@ public final class LyricsHud implements HudElement {
             }
             float[] p = gl.screen;
             a *= gl.view * gl.occlusion; // blocks only hide/tint; they don't count as the word leaving view
+            a *= spanOpacity(s, gl.span);
             int alpha = Math.round(a * 255 * dim);
             if (alpha < 4) continue;
 
             // rise into place while appearing, drift up while fading out (screen y points down)
             float lift = s.floatUp ? (1 - in) * rise - (1 - out) * rise : 0;
-            int color = gl.tintAmount > 0 ? lerpColor(s.lyricColor, gl.tint, gl.tintAmount) : s.lyricColor;
+            int base = spanColor(s, gl.span);
+            int color = gl.tintAmount > 0 ? lerpColor(base, gl.tint, gl.tintAmount) : base;
             float pulse = 1;
+            float drop = s.dropEffect ? Beat.drop() * s.dropIntensity : 0;
+            pulse *= 1 + 0.25f * drop; // everything pops on a drop
+            // shake on a drop: each letter jitters on its own, a new offset every frame
+            float shake = drop * h * 0.012f, seed = gl.lx * 0.37f + gl.ly * 0.11f + System.nanoTime() / 16_000_000f;
+            float shakeX = shake * (float) Math.sin(seed * 12.9898), shakeY = shake * (float) Math.sin(seed * 78.233);
             // pop and flash on each beat; sung "oh"/"ah" sounds always do
             if (gl.vocal || s.pulse == Settings.Pulse.ALL || (s.pulse == Settings.Pulse.NOUNS && gl.noun)) {
                 float beat = Beat.pulse();
-                pulse = 1 + BEAT_GROW * s.pulseStrength * beat;
+                pulse *= 1 + BEAT_GROW * s.pulseStrength * beat;
                 color = lerpColor(color, s.pulseColor, Math.min(1, beat * 0.7f * s.pulseStrength));
             }
+            // the chosen animations, as extra offset (screen px), size and turn on top of everything else
+            float k = 1 - out, extraX = 0, extraY = 0, extraTurn = 0, extraSize = 1;
+            switch (s.appear) {
+                case BOUNCE -> extraSize *= easeOutBack(in);
+                case POP -> extraSize *= 1 + 0.6f * (1 - in) * (1 - in);
+                case GLITCH -> {
+                    extraX += (1 - in) * h * 0.02f * noise(gl, 2);
+                    extraY += (1 - in) * h * 0.006f * noise(gl, 3);
+                }
+                default -> {}
+            }
+            long now = System.currentTimeMillis();
+            switch (s.idle) {
+                case WAVE -> extraY += (float) Math.sin(now * 0.005 + gl.lx * 0.02) * h * 0.004f;
+                case FLOAT -> extraY += (float) Math.sin(now * 0.0025 + gl.order * 1.3) * h * 0.006f;
+                default -> {}
+            }
+            switch (s.exit) {
+                case SCATTER -> { // letters fly apart from the middle of the line
+                    extraX += Math.signum(gl.lx) * k * h * 0.12f * (0.6f + 0.4f * Math.abs(still(gl, 4)));
+                    extraY -= k * h * 0.05f * still(gl, 5);
+                    extraTurn += k * 1.2f * still(gl, 6);
+                }
+                case FALL -> {
+                    extraY += k * k * h * 0.25f;
+                    extraTurn += k * 0.6f * still(gl, 7);
+                }
+                case BURN -> {
+                    extraSize *= 1 - 0.4f * k;
+                    extraY -= k * h * 0.03f;
+                    color = lerpColor(color, 0xFF7A2E, Math.min(1, k * 1.6f)); // glows orange as it burns away
+                }
+                default -> {}
+            }
+            pulse *= Math.max(0.01f, extraSize);
+            shakeX += extraX;
+            shakeY += extraY;
             float hw = gl.image.width / 2f, hh = gl.image.height / 2f;
+            if (world3d) {
+                queueInWorld(v, gl, camera, s, hw / RES * pulse, hh / RES * pulse, gl.lx + shakeX, gl.ly - push + shakeY + lift,
+                        extraTurn, alpha, color);
+                continue;
+            }
             float imageScale = 1; // screen px per letter-image px, to blur by the same screen distance in every mode
             g.pose().pushMatrix();
             switch (mode) {
@@ -354,8 +476,8 @@ public final class LyricsHud implements HudElement {
                             gl.up - (float) Math.toRadians(turnPitch) * gl.layer * lag + push / v.pixelsPerRadian), w, h);
                     float angle = next == null ? 0 : (float) Math.atan2(next[1] - p[1], next[0] - p[0]);
                     float zoom = Math.clamp(p[2] * (float) SPHERE_RADIUS / v.pixelsPerRadian, 0.2f, 4f) * pulse; // ~1 unless FOV changed
-                    g.pose().translate(p[0], p[1] + lift * zoom);
-                    g.pose().rotate(angle);
+                    g.pose().translate(p[0] + shakeX, p[1] + shakeY + lift * zoom);
+                    g.pose().rotate(angle + extraTurn);
                     g.pose().scale(zoom / RES, zoom / RES);
                     imageScale = zoom / RES;
                 }
@@ -371,17 +493,21 @@ public final class LyricsHud implements HudElement {
                     float ax = (side[0] - p[0]) / hw * pulse, ay = (side[1] - p[1]) / hw * pulse;
                     float bx = (down[0] - p[0]) / hh * pulse, by = (down[1] - p[1]) / hh * pulse;
                     float scale = (float) Math.hypot(bx, by) * RES; // screen px per layout px here
-                    g.pose().translate(p[0], p[1] + lift * scale);
+                    g.pose().translate(p[0] + shakeX, p[1] + shakeY + lift * scale);
+                    g.pose().rotate(extraTurn);
                     g.pose().mul(new Matrix3x2f(ax, ay, bx, by, 0, 0));
                     imageScale = (float) Math.hypot(bx, by);
                 }
                 case SCREEN -> {
-                    g.pose().translate(p[0], p[1] + lift);
+                    g.pose().translate(p[0] + shakeX, p[1] + shakeY + lift);
+                    g.pose().rotate(extraTurn);
                     g.pose().scale(pulse / RES, pulse / RES);
                     imageScale = pulse / RES;
                 }
             }
-            gl.image.drawSoft(g, Math.round(-hw), Math.round(-hh), alpha << 24 | (color & 0xFFFFFF), blurPx / Math.max(0.01f, imageScale), menuFade);
+            float blur = blurPx / Math.max(0.01f, imageScale);
+            if (gl.effects != null) gl.effects.drawSoft(g, Math.round(-hw), Math.round(-hh), alpha << 24 | 0xFFFFFF, blur, menuFade);
+            gl.image.drawSoft(g, Math.round(-hw), Math.round(-hh), alpha << 24 | (color & 0xFFFFFF), blur, menuFade);
             g.pose().popMatrix();
         }
     }
@@ -405,11 +531,60 @@ public final class LyricsHud implements HudElement {
         if (r.tintAmount() > 0) gl.tint = r.tint();
     }
 
+    /** Text colour for a letter: its own colour inside (parentheses) or "quotes" when that style is on. */
+    private static int spanColor(Settings s, int span) {
+        if (span == Lyrics.IN_PARENS && s.parenStyle) return s.parenColor;
+        if (span == Lyrics.IN_QUOTES && s.quoteStyle) return s.quoteColor;
+        return s.lyricColor;
+    }
+
+    private static float spanOpacity(Settings s, int span) {
+        if (span == Lyrics.IN_PARENS && s.parenStyle) return s.parenOpacity;
+        if (span == Lyrics.IN_QUOTES && s.quoteStyle) return s.quoteOpacity;
+        return 1;
+    }
+
+    /** Overshoots past 1 and settles back, for a bouncy arrival. */
+    private static float easeOutBack(float t) {
+        float c = 1.7f, u = t - 1;
+        return 1 + (c + 1) * u * u * u + c * u * u;
+    }
+
+    /** A per-letter random number in -1..1 that changes every frame (flicker, jitter). */
+    private static float noise(Glyph gl, int salt) {
+        return (float) Math.sin((gl.lx * 0.37f + gl.ly * 0.11f + salt * 17) * 12.9898 + System.nanoTime() / 16_000_000L * 78.233);
+    }
+
+    /** A per-letter random number in -1..1 that stays the same (so a scattering letter keeps its direction). */
+    private static float still(Glyph gl, int salt) {
+        double v = Math.sin((gl.lx * 0.37 + gl.ly * 0.11 + salt * 17) * 12.9898) * 43758.5453;
+        return (float) (2 * (v - Math.floor(v)) - 1);
+    }
+
     private static int lerpColor(int from, int to, float t) {
         int r = Math.round(((from >> 16) & 0xFF) + (((to >> 16) & 0xFF) - ((from >> 16) & 0xFF)) * t);
         int g = Math.round(((from >> 8) & 0xFF) + (((to >> 8) & 0xFF) - ((from >> 8) & 0xFF)) * t);
         int b = Math.round((from & 0xFF) + ((to & 0xFF) - (from & 0xFF)) * t);
         return r << 16 | g << 8 | b;
+    }
+
+    /**
+     * Queues a pinned letter as a real quad in the world: its corners (half size {@code hw} x {@code hh} layout px,
+     * turned by {@code turn}) are put on the sign's surface, so warp, parallax and the animations all carry over.
+     */
+    private static void queueInWorld(View v, Glyph gl, Camera camera, Settings s, float hw, float hh, float cx, float cy,
+                                     float turn, int alpha, int color) {
+        float cos = (float) Math.cos(turn), sin = (float) Math.sin(turn);
+        float[][] offsets = {{-hw, -hh}, {-hw, hh}, {hw, hh}, {hw, -hh}}; // top left, bottom left, bottom right, top right
+        Vec3[] c = new Vec3[4];
+        for (int i = 0; i < 4; i++) {
+            float dx = offsets[i][0] * cos - offsets[i][1] * sin, dy = offsets[i][0] * sin + offsets[i][1] * cos;
+            c[i] = onSurface(v, camera, s, cx + dx, cy + dy, gl.layer);
+        }
+        if (gl.effects != null) WorldText.add(gl.effects.id(), c[0], c[1], c[2], c[3], alpha << 24 | 0xFFFFFF);
+        // the letter a hair in front of its glow/outline, so they don't flicker against each other
+        Vec3 nudge = camera.position().subtract(c[0]).normalize().scale(0.004);
+        WorldText.add(gl.image.id(), c[0].add(nudge), c[1].add(nudge), c[2].add(nudge), c[3].add(nudge), alpha << 24 | (color & 0xFFFFFF));
     }
 
     /** Point on the sphere {@code across} radians to the line's right and {@code up} radians above it (line's own frame). */
@@ -467,16 +642,18 @@ public final class LyricsHud implements HudElement {
         v.rowMaxX = w - anchorX - margin;
 
         List<Lyrics.Word> words = line.words();
-        float big = h * 0.085f * s.lyricSize, small = h * 0.065f * s.lyricSize;
+        float big = h * BIG_TEXT * s.lyricSize, small = h * SMALL_TEXT * s.lyricSize;
         int rowGap = Math.round(TextArt.lyricAscent(big) * 1.05f);
         v.lineHeight = rowGap * (s.layout == Settings.Layout.CENTERED ? 2.2f : 1.2f); // only centered stacks two rows
         List<String> tokens = words.stream().flatMap(word -> Arrays.stream(word.text().split(" "))).toList();
         boolean[] nouns = Nouns.find(tokens), vocals = Nouns.vocal(tokens);
-        int[] counters = {0, 0}; // [token in the line, word in the line] of the letters being placed
-        LetterSink sink = (px, py, word, state, noun, vocal, order, layer, image) -> {
+        // [token in the line, word in the line] of the letters being placed, then [paren depth, in quotes] (Lyrics.spanStep)
+        int[] counters = {0, 0, 0, 0};
+        LetterSink sink = (px, py, word, state, noun, vocal, span, order, layer, image) -> {
             float up = (float) (-py / v.pixelsPerRadian); // screen y points down
             float across = (float) (px / v.pixelsPerRadian / Math.cos(up));
-            v.glyphs.add(new Glyph(image, word, state, noun, vocal, order, layer, across, up, (float) px, (float) py));
+            if (Float.isNaN(state.firstX)) state.firstX = (float) px;
+            v.glyphs.add(new Glyph(image, word, state, noun, vocal, span, order, layer, across, up, (float) px, (float) py));
         };
         switch (s.layout) {
             case SINGLE -> placeRow(v, words, big, 0, 0, -rowGap / 2, MEAN_LAYER, nouns, vocals, counters, sink);
@@ -500,7 +677,7 @@ public final class LyricsHud implements HudElement {
 
     /** Takes a letter whose centre sits at a layout-pixel offset from the line's anchor (y down). */
     private interface LetterSink {
-        void add(double px, double py, Lyrics.Word word, WordState state, boolean noun, boolean vocal, int order, float layer, GpuImage image);
+        void add(double px, double py, Lyrics.Word word, WordState state, boolean noun, boolean vocal, int span, int order, float layer, GpuImage image);
     }
 
     /**
@@ -508,7 +685,7 @@ public final class LyricsHud implements HudElement {
      * the camera.
      * ponytail: drawn as an overlay, so blocks don't hide it; real in-world rendering would need a level render hook per loader.
      */
-    private static float[] project(Camera camera, Vec3 point, int w, int h) {
+    static float[] project(Camera camera, Vec3 point, int w, int h) {
         Vec3 forward = Vec3.directionFromRotation(camera.xRot(), camera.yRot());
         double depth = point.subtract(camera.position()).dot(forward);
         if (depth < 0.5) return null;
@@ -546,15 +723,20 @@ public final class LyricsHud implements HudElement {
             float layer = rowLayer; // whole rows move together
             for (int k = 0; k < text.length(); k++) {
                 String ch = text.substring(k, k + 1);
+                int[] spanState = {counters[2], counters[3]};
+                int span = Lyrics.spanStep(text.charAt(k), spanState);
+                counters[2] = spanState[0];
+                counters[3] = spanState[1];
                 if (ch.isBlank()) {
                     counters[0]++;
                     continue;
                 }
-                TextArt.Art art = TextArt.word(ch, fontPx);
-                GpuImage image = new GpuImage(art.image());
+                GlyphCache.Entry letter = GlyphCache.get(ch, fontPx); // usually already drawn in the background
+                GpuImage image = letter.image();
                 double gx = wordX + TextArt.lyricWidth(text.substring(0, k), fontPx) / (double) RES + spacing * k;
-                sink.add(gx + (image.width / 2.0 - art.pad()) / RES, top + (image.height / 2.0 - art.pad()) / RES,
-                        words.get(i), state, nouns[Math.min(counters[0], nouns.length - 1)], vocals[Math.min(counters[0], vocals.length - 1)], order, layer, image);
+                sink.add(gx + (image.width / 2.0 - letter.pad()) / RES, top + (image.height / 2.0 - letter.pad()) / RES,
+                        words.get(i), state, nouns[Math.min(counters[0], nouns.length - 1)], vocals[Math.min(counters[0], vocals.length - 1)], span, order, layer, image);
+                v.glyphs.getLast().effects = letter.effects();
             }
             wordX += TextArt.lyricWidth(text + " ", fontPx) / (double) RES + spacing * text.length();
             counters[0]++;

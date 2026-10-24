@@ -101,6 +101,8 @@ public final class Lyrics {
                 JsonElement dur = r.get("duration"); // some entries have none: rank them last
                 long diff = dur == null || dur.isJsonNull() ? Long.MAX_VALUE - 1
                         : Math.abs((long) (dur.getAsDouble() * 1000) - t.durationMs());
+                // a version with real per-word timing wins over one that's only a little closer in length
+                if (diff <= GOOD_MATCH_MS && WORD_TAG.matcher(r.get("syncedLyrics").getAsString()).find()) diff = 0;
                 if (diff < bestDiff) {
                     best = r;
                     bestDiff = diff;
@@ -139,7 +141,7 @@ public final class Lyrics {
         }
         List<Line> out = new ArrayList<>();
         for (int i = 0; i < texts.size(); i++) {
-            if (texts.get(i).isEmpty()) continue; // blank LRC lines just mark instrumental gaps
+            if (WORD_TAG.matcher(texts.get(i)).replaceAll("").isBlank()) continue; // blank LRC lines just mark instrumental gaps
             long start = starts.get(i);
             long next = i + 1 < starts.size() ? starts.get(i + 1) : Math.max(durationMs, start + 5000);
             long end = Math.min(next, start + 8000);
@@ -148,19 +150,80 @@ public final class Lyrics {
         return out;
     }
 
-    // ponytail: LRCLIB only has line timings, so words are spread by character count over the first 70%
-    // of the line. Parse enhanced-LRC <mm:ss.xx> word tags here if a source with real word timing is added.
+    /** Enhanced LRC word timestamps inside a line: "<00:12.40>word". */
+    private static final Pattern WORD_TAG = Pattern.compile("<(\\d+):(\\d+(?:\\.\\d+)?)>");
+
+    /**
+     * Gives each (grouped) word its start time. Lines with enhanced-LRC word tags use those exact times; otherwise
+     * words are spread over the first 70% of the line by syllable count, which follows singing better than letters.
+     * ponytail: syllables are counted as vowel groups, so the estimate drifts on long sustained notes.
+     */
     private static List<Word> spreadWords(String text, long start, long end) {
-        List<String> parts = groupShortWords(text.split("\\s+"));
-        double span = (end - start) * 0.7;
-        int totalChars = parts.stream().mapToInt(p -> p.replace(" ", "").length()).sum();
+        List<String> pieces = new ArrayList<>();
+        List<Long> times = new ArrayList<>();
+        Matcher m = WORD_TAG.matcher(text);
+        if (m.find()) {
+            List<String> tokens = new ArrayList<>();
+            List<Long> tokenTimes = new ArrayList<>();
+            long t = start;
+            int last = 0;
+            m.reset();
+            while (m.find()) {
+                addTokens(text.substring(last, m.start()), t, tokens, tokenTimes);
+                t = (long) (Integer.parseInt(m.group(1)) * 60_000 + Double.parseDouble(m.group(2)) * 1000);
+                last = m.end();
+            }
+            addTokens(text.substring(last), t, tokens, tokenTimes);
+            // split "bam-bam-bam" up front so each piece gets its share of the time until the next word
+            for (int i = 0; i < tokens.size(); i++) {
+                List<String> split = splitRepeats(new String[]{tokens.get(i)});
+                long from = tokenTimes.get(i), to = i + 1 < tokens.size() ? tokenTimes.get(i + 1) : Math.max(from, end);
+                for (int j = 0; j < split.size(); j++) {
+                    pieces.add(split.get(j));
+                    times.add(from + (to - from) * j / split.size());
+                }
+            }
+        } else {
+            pieces.addAll(List.of(text.split("\\s+")));
+        }
+
+        List<String> groups = groupShortWords(pieces.toArray(String[]::new));
         List<Word> words = new ArrayList<>();
+        if (!times.isEmpty()) {
+            int piece = 0; // a group starts when its first word is sung
+            for (String group : groups) {
+                words.add(new Word(group, times.get(Math.min(piece, times.size() - 1))));
+                piece += group.split(" ").length;
+            }
+            return words;
+        }
+        double span = (end - start) * 0.7, total = groups.stream().mapToDouble(Lyrics::weight).sum();
         double t = start;
-        for (String p : parts) {
-            words.add(new Word(p, (long) t));
-            t += span * p.replace(" ", "").length() / Math.max(1, totalChars);
+        for (String group : groups) {
+            words.add(new Word(group, (long) t));
+            t += span * weight(group) / Math.max(1e-9, total);
         }
         return words;
+    }
+
+    private static void addTokens(String segment, long time, List<String> tokens, List<Long> times) {
+        for (String token : segment.trim().split("\\s+")) {
+            if (token.isEmpty()) continue;
+            tokens.add(token);
+            times.add(time);
+        }
+    }
+
+    /** Roughly how long a word group takes to sing: its syllables (vowel groups), plus a little per word. */
+    static double weight(String group) {
+        double w = 0;
+        for (String word : group.split(" ")) {
+            Matcher vowels = Pattern.compile("[aeiouyàáâäæãåèéêëìíîïòóôöõøùúûü]+").matcher(word.toLowerCase(Locale.ROOT));
+            int syllables = 0;
+            while (vowels.find()) syllables++;
+            w += Math.max(1, syllables) + 0.3;
+        }
+        return w;
     }
 
     /** Little words that are sung quickly into the next one, so the estimated timing has fewer chances to drift. */
@@ -258,12 +321,38 @@ public final class Lyrics {
         return w.length() <= 2 || SHORT_WORDS.contains(w);
     }
 
+    /** What a letter is inside of, for {@link #spanStep}. */
+    public static final int PLAIN = 0, IN_PARENS = 1, IN_QUOTES = 2;
+
+    /**
+     * Feeds the next character of a line (in reading order) and says whether it's inside (parentheses) or "quotes",
+     * counting the brackets and quote marks themselves as inside. {@code state} carries [paren depth, in quotes] from
+     * one character to the next; start each line with a fresh {@code new int[2]}. Parentheses win if both apply.
+     */
+    public static int spanStep(char c, int[] state) {
+        boolean opensQuote = c == '“' || c == '„' || (c == '"' && state[1] == 0);
+        boolean closesQuote = c == '”' || (c == '"' && state[1] == 1);
+        if (c == '(') state[0]++;
+        if (opensQuote) state[1] = 1;
+        int span = state[0] > 0 ? IN_PARENS : state[1] > 0 ? IN_QUOTES : PLAIN;
+        if (c == ')') state[0] = Math.max(0, state[0] - 1);
+        if (closesQuote) state[1] = 0;
+        return span;
+    }
+
     /** Index of the last line that started at or before {@code posMs}, or -1. */
     public static int lastStarted(List<Line> lines, long posMs) {
         for (int i = lines.size() - 1; i >= 0; i--) {
             if (lines.get(i).startMs() <= posMs) return i;
         }
         return -1;
+    }
+
+    private static String spans(String line) {
+        int[] state = new int[2];
+        StringBuilder out = new StringBuilder();
+        for (char c : line.toCharArray()) out.append(spanStep(c, state));
+        return out.toString();
     }
 
     public static void main(String[] args) {
@@ -296,6 +385,14 @@ public final class Lyrics {
         assert Arrays.equals(guesses("Måneskin - Topic", "SUPERMODEL | Live").get(0), new String[]{"Måneskin", "SUPERMODEL"});
         assert Arrays.equals(guesses("Queen", "Bohemian Rhapsody - Remastered 2011").get(0), new String[]{"Queen", "Bohemian Rhapsody"});
         assert Arrays.equals(guesses("Lost Panda", "Katy Perry - California Gurls (Lyrics) Feat. Snoop Dogg").get(0), new String[]{"Katy Perry", "California Gurls"});
+        assert spans("I said (oh yeah) \"go\" now").equals("0000000111111111022220000") : spans("I said (oh yeah) \"go\" now");
+        assert spans("“hi” (a “b”)").equals("222201111111") : spans("“hi” (a “b”)");
+        // enhanced LRC: exact word times, grouping still applies ("the light" starts when "the" is sung)
+        List<Line> timed = parse("[00:01.00] <00:01.00>Yellow <00:01.80>diamonds <00:02.50>in <00:02.70>the <00:03.00>light", 10_000);
+        assert timed.getFirst().words().stream().map(w -> w.text() + "@" + w.startMs()).toList()
+                .equals(List.of("Yellow@1000", "diamonds@1800", "in@2500", "the light@2700")) : timed.getFirst().words();
+        // syllables: "strength" (1) gets less time than "beautiful" (3) despite having more letters
+        assert weight("strength") < weight("beautiful");
         System.out.println("ok");
     }
 }

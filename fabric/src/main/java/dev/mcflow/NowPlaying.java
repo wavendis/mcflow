@@ -3,6 +3,14 @@ package dev.mcflow;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.nio.file.Files;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+
 /** Tracks what Windows' media controls (Spotify, browsers, ...) report as playing, via a PowerShell {@link Helper}. */
 public final class NowPlaying {
     public record Track(String title, String artist, long durationMs) {}
@@ -11,6 +19,13 @@ public final class NowPlaying {
     private static volatile long positionMs;
     private static volatile long sampledAt;
     private static volatile boolean playing;
+    /** The track's cover (null if it has none) and its most striking colour, for an automatic accent. */
+    private static volatile BufferedImage cover;
+    private static volatile Integer coverColor;
+    private static String coverPath;
+    /** Apps with a media session right now (Windows media IDs), and the source choice last written for the helper. */
+    private static volatile List<String> apps = List.of();
+    private static String writtenSource;
 
     private NowPlaying() {}
 
@@ -21,6 +36,42 @@ public final class NowPlaying {
     /** Current playback position, interpolated between the helper's samples. */
     public static long positionMs() {
         return playing ? positionMs + (System.currentTimeMillis() - sampledAt) : positionMs;
+    }
+
+    /** Tells the helper which app to follow (it reads source.txt next to its script every poll). */
+    private static void writeSource() {
+        String source = Settings.get().musicSource;
+        if (source.equals(writtenSource)) return;
+        try {
+            Files.writeString(McFlow.configDir().resolve("mcflow/source.txt"), source);
+            writtenSource = source;
+        } catch (Exception e) {
+            McFlow.LOGGER.warn("Couldn't save the music source choice", e);
+        }
+    }
+
+    public static List<String> apps() {
+        return apps;
+    }
+
+    /** A readable name for a Windows media ID: "Spotify.exe" -> "Spotify", "308046B0AF4A39CB" -> "Firefox"... */
+    public static String appName(String id) {
+        String name = id.substring(Math.max(id.lastIndexOf('\\'), id.lastIndexOf('!')) + 1).replaceFirst("(?i)\\.exe$", "");
+        return switch (name.toLowerCase(Locale.ROOT)) {
+            case "308046b0af4a39cb" -> "Firefox";
+            case "msedge" -> "Edge";
+            case "chrome" -> "Chrome";
+            case "opera" -> "Opera";
+            default -> name.isEmpty() ? id : Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        };
+    }
+
+    public static BufferedImage cover() {
+        return cover;
+    }
+
+    public static Integer coverColor() {
+        return coverColor;
     }
 
     public static boolean playing() {
@@ -35,6 +86,8 @@ public final class NowPlaying {
 
     private static void update(String line) {
         JsonObject o = JsonParser.parseString(line).getAsJsonObject();
+        if (o.has("apps")) apps = o.getAsJsonArray("apps").asList().stream().map(e -> e.getAsString()).toList();
+        writeSource();
         if (!o.has("title")) {
             track = null;
             playing = false;
@@ -48,5 +101,17 @@ public final class NowPlaying {
         positionMs = o.get("pos").getAsLong();
         sampledAt = System.currentTimeMillis();
         playing = o.get("playing").getAsBoolean();
+        String art = o.has("art") && !o.get("art").isJsonNull() ? o.get("art").getAsString() : null;
+        if (!Objects.equals(art, coverPath)) {
+            coverPath = art;
+            BufferedImage image = null;
+            try {
+                if (art != null) image = ImageIO.read(new File(art));
+            } catch (Exception e) {
+                McFlow.LOGGER.warn("Couldn't read cover art {}", art, e);
+            }
+            cover = image;
+            coverColor = image == null ? null : TextArt.dominantColor(image);
+        }
     }
 }

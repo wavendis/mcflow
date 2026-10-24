@@ -14,3 +14,6 @@ desktop.ini
 **/.gradle/
 **/build/
 **/run/
+
+# release jars (uploaded to GitHub Releases, not committed)
+release/
