@@ -1,0 +1,16 @@
+# reference videos / recordings
+*.mov
+*.mp4
+
+# OS and editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.iml
+
+# Gradle output and test-client game folders (each project's own .gitignore has the full list)
+**/.gradle/
+**/build/
+**/run/

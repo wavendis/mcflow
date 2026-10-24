@@ -1,0 +1,21 @@
+{
+	"schemaVersion": 1,
+	"id": "mcflow",
+	"version": "${version}",
+	"name": "Mc'Flow",
+	"description": "Synced lyrics for whatever you're playing, shown in-game.",
+	"license": "MIT",
+	"icon": "assets/mcflow/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"dev.mcflow.McFlow"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
