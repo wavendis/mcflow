@@ -1,5 +1,6 @@
 package dev.mcflow;
 
+import javax.imageio.ImageIO;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
@@ -10,6 +11,7 @@ import java.awt.Rectangle;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -22,6 +24,8 @@ import java.util.function.IntConsumer;
  */
 public final class SettingsPanel {
     private static final Color BG = new Color(16, 16, 26, 232);
+    /** The mod's logo, next to the title (null if it couldn't be read: the title gets an accent dot instead). */
+    private static final BufferedImage LOGO = readLogo();
     private static final Color HOVER = new Color(255, 255, 255, 14);
     private static final Color TRACK = new Color(255, 255, 255, 34);
     private static final Color DIM = new Color(150, 150, 172);
@@ -104,9 +108,15 @@ public final class SettingsPanel {
 
         // header
         Settings s = Settings.get();
-        g.setColor(new Color(s.accent));
-        g.fillOval(pad, px(38), px(14), px(14));
-        text("Mc'Flow", pad + px(26), px(52), font(26, Font.BOLD), TextArt.PILL_TEXT);
+        int logoW = px(50);
+        if (LOGO != null) {
+            int logoH = logoW * LOGO.getHeight() / LOGO.getWidth();
+            g.drawImage(LOGO, pad, px(44) - logoH / 2, logoW, logoH, null); // centred on the title's letters
+        } else {
+            g.setColor(new Color(s.accent));
+            g.fillOval(pad, px(38), px(14), px(14));
+        }
+        text("Mc'Flow", pad + (LOGO != null ? logoW + px(10) : px(26)), px(54), font(26, Font.BOLD), TextArt.PILL_TEXT);
         text("Settings apply live and save automatically", pad, px(80), font(14, Font.PLAIN), DIM);
         tabs(px(100));
 
@@ -217,6 +227,7 @@ public final class SettingsPanel {
             String spread = s.rowSpread >= 0.4f ? "opposite sides" : "gap " + Math.round(s.rowSpread * 100) + "% each side";
             slider("Row spread", s.rowSpread, 0, 0.45f, 0.005f, spread, v -> s.rowSpread = v);
         }
+        choice("Old lines move", new String[]{"Up", "Down"}, s.flowDown ? 1 : 0, i -> s.flowDown = i == 1);
 
         section("Position");
         boolean world = s.placement != Settings.Placement.SCREEN;
@@ -231,6 +242,8 @@ public final class SettingsPanel {
         } else {
             slider("Horizontal", s.screenX, 0, 1, 0.01f, Math.round(s.screenX * 100) + "%", v -> s.screenX = v);
             slider("Vertical", s.screenY, 0, 1, 0.01f, Math.round(s.screenY * 100) + "%", v -> s.screenY = v);
+            String bend = Math.abs(s.screenBend) < 0.01f ? "straight" : Math.round(Math.abs(s.screenBend) * 100) + "% " + (s.screenBend > 0 ? "arch" : "smile");
+            slider("Bend", s.screenBend, -1, 1, 0.05f, bend, v -> s.screenBend = Math.abs(v) < 0.01f ? 0 : v);
         }
 
         if (s.placement == Settings.Placement.PINNED) {
@@ -243,6 +256,13 @@ public final class SettingsPanel {
         section("Depth");
         if (world) toggle("Block detection (walls, glass, water)", s.blockDetection, v -> s.blockDetection = v);
         slider("Parallax", s.parallax, 0, 1, 0.05f, s.parallax == 0 ? "off" : Math.round(s.parallax * 100) + "%", v -> s.parallax = v);
+
+        section("PvP");
+        toggle("Lyrics follow the last player you hit", s.pvpMode, v -> s.pvpMode = v);
+        if (s.pvpMode) {
+            slider("Back to normal after", s.pvpSeconds, 2, 30, 1, Math.round(s.pvpSeconds) + " s without a hit", v -> s.pvpSeconds = v);
+            hint("Any new hit restarts the timer; hitting someone else switches to them");
+        }
     }
 
     private void beatTab(Settings s) {
@@ -279,6 +299,9 @@ public final class SettingsPanel {
 
     private void moreTab(Settings s) {
         section("Music");
+        // a bare button row (nothing selected); M / , / . do the same in game
+        choice("", new String[]{"‹‹  Previous", NowPlaying.playing() ? "Pause" : "Play", "Next  ››"}, -1,
+                i -> NowPlaying.control(new String[]{"previous", "play", "next"}[i]));
         sourcePicker(s);
         slider("Timing offset", s.offsetMs, -3000, 3000, 50, (s.offsetMs > 0 ? "+" : "") + s.offsetMs + " ms  ([ / ] keys)", v -> s.offsetMs = Math.round(v));
 
@@ -537,6 +560,14 @@ public final class SettingsPanel {
         if (metrics(f).stringWidth(s) <= maxWidth) return s;
         while (s.length() > 1 && metrics(f).stringWidth(s + "…") > maxWidth) s = s.substring(0, s.length() - 1);
         return s + "…";
+    }
+
+    private static BufferedImage readLogo() {
+        try (InputStream in = SettingsPanel.class.getResourceAsStream("/assets/mcflow/logo.png")) {
+            return in == null ? null : ImageIO.read(in);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private int px(float designPx) {

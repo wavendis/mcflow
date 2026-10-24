@@ -295,23 +295,39 @@ public final class Lyrics {
         return word.matches(".*[,.?!;:…)\"”]$");
     }
 
+    private static final Pattern SENTENCE_END = Pattern.compile("[.?!…]$"), CLAUSE_END = Pattern.compile("[,;:]$");
+
     /**
-     * Where to break a line into the sky's two rows: at the clause break nearest the middle, so the end of one
-     * sentence never shares a row with the start of the next; otherwise halfway. Returns the first index of row two.
+     * Where to break a line into the sky's two rows; returns the first index of row two. Each break costs how uneven
+     * the two rows' word counts are, minus a bonus at a sentence end (so one sentence's end rarely shares a row with
+     * the next one's start), a smaller one at a comma, and one just before a (bracket) or "quote" (it goes whole onto
+     * row two, the right side); breaking inside brackets or quotes costs so much it only happens with no other choice.
      */
     public static int rowSplit(List<Word> words) {
-        int sentence = breakNearestMiddle(words, "[.?!…]$");
-        if (sentence > 0) return sentence;
-        int clause = breakNearestMiddle(words, "[,;:]$");
-        return clause > 0 ? clause : (words.size() + 1) / 2;
-    }
-
-    private static int breakNearestMiddle(List<Word> words, String endPattern) {
-        Pattern p = Pattern.compile(endPattern);
-        int n = words.size(), best = -1;
+        int n = words.size();
+        if (n < 2) return n;
+        int[] tokens = new int[n + 1]; // words before index i
+        boolean[] openAfter = new boolean[n]; // a bracket or quote is still open after word i
+        int[] state = new int[2];
+        for (int i = 0; i < n; i++) {
+            String text = words.get(i).text();
+            tokens[i + 1] = tokens[i] + text.split(" ").length;
+            for (char c : text.toCharArray()) spanStep(c, state);
+            openAfter[i] = state[0] > 0 || state[1] > 0;
+        }
+        int best = (n + 1) / 2;
+        double bestCost = Double.MAX_VALUE;
         for (int i = 1; i < n; i++) {
-            String w = words.get(i - 1).text().replaceAll("[)\"”]+$", "");
-            if (p.matcher(w).find() && (best < 0 || Math.abs(2 * i - n) < Math.abs(2 * best - n))) best = i;
+            String end = words.get(i - 1).text().replaceAll("[)\"”]+$", ""), next = words.get(i).text();
+            double cost = Math.abs(tokens[n] - 2 * tokens[i]);
+            if (SENTENCE_END.matcher(end).find()) cost -= 3;
+            else if (CLAUSE_END.matcher(end).find()) cost -= 1.5;
+            if (openAfter[i - 1]) cost += 100;
+            else if (next.startsWith("(") || next.startsWith("\"") || next.startsWith("“")) cost -= 2;
+            if (cost < bestCost) {
+                bestCost = cost;
+                best = i;
+            }
         }
         return best;
     }
@@ -355,6 +371,10 @@ public final class Lyrics {
         return out.toString();
     }
 
+    private static String row2(List<Word> words) {
+        return String.join(" ", words.subList(rowSplit(words), words.size()).stream().map(Word::text).toList());
+    }
+
     public static void main(String[] args) {
         List<Line> l = parse("[00:08.00] Yellow diamonds in the light\n[00:11.86] Now we're standing side by side\n[00:15.50]\n[00:30.00] Last", 40_000);
         assert l.size() == 3 : l;
@@ -375,6 +395,11 @@ public final class Lyrics {
         assert two.get(rowSplit(two) - 1).text().endsWith(".") : "rows split at the sentence end, not at the middle";
         List<Word> plain = spreadWords("Yellow diamonds in the light", 0, 4000);
         assert rowSplit(plain) == 2;
+        assert row2(spreadWords("I've been waiting for you all night (oh yeah)", 0, 4000)).endsWith(" (oh yeah)") : "brackets stay on one side";
+        assert !row2(spreadWords("She said \"never let me go\" and I believed her", 0, 4000)).matches("[^\"]*\"[^\"]*") : "quotes stay on one side";
+        assert row2(spreadWords("Baby (I just want you here tonight)", 0, 4000)).startsWith("(") : "brackets go whole to row two when it's close";
+        assert row2(spreadWords("Running. Through the fire and the rain tonight we go", 0, 4000)).split(" ").length < 8 : "a sentence end doesn't win at any imbalance";
+        assert row2(spreadWords("one two three four five six seven eight", 0, 4000)).split(" ").length == 4 : "even halves";
         assert l.get(1).endMs() == 15500 : "blank line ends the previous one";
         assert lastStarted(l, 9000) == 0 && lastStarted(l, 7000) == -1 && lastStarted(l, 20000) == 1 && lastStarted(l, 31000) == 2;
         assert Arrays.equals(guesses("JustinBieberVEVO", "Ariana Grande, Justin Bieber - Stuck with U (Lyric Video)").get(0), new String[]{"Ariana Grande, Justin Bieber", "Stuck with U"});

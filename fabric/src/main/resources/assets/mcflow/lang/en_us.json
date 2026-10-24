@@ -3,5 +3,8 @@
   "key.mcflow.earlier": "Lyrics earlier",
   "key.mcflow.later": "Lyrics later",
   "mcflow.offset": "Lyrics offset: %s ms",
-  "key.mcflow.settings": "Open Mc'Flow settings"
+  "key.mcflow.settings": "Open Mc'Flow settings",
+  "key.mcflow.play": "Play / pause music",
+  "key.mcflow.previous": "Previous song",
+  "key.mcflow.next": "Next song"
 }

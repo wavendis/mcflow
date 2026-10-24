@@ -3,6 +3,7 @@
 # art is the path of the track's cover image (saved next to this script when the song changes), if it has one.
 # apps lists every app with a media session. If source.txt (next to this script) names one of them, only that app is
 # followed; otherwise it's whatever Windows considers the current session.
+# Writing play, next or previous to command.txt controls the followed app.
 param([int]$ParentPid)
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
@@ -75,5 +76,20 @@ while ($true) {
     } catch {}
     [Console]::Out.WriteLine($line)
     [Console]::Out.Flush()
-    Start-Sleep -Milliseconds 300
+    # wait for the next poll, running any media command the game drops in command.txt (play, next, previous)
+    $cmdFile = Join-Path $PSScriptRoot 'command.txt'
+    for ($i = 0; $i -lt 6; $i++) {
+        if (Test-Path $cmdFile) {
+            $cmd = (Get-Content $cmdFile -Raw).Trim()
+            Remove-Item $cmdFile -ErrorAction SilentlyContinue
+            try {
+                if ($s) {
+                    $op = switch ($cmd) { 'play' { $s.TryTogglePlayPauseAsync() } 'next' { $s.TrySkipNextAsync() } 'previous' { $s.TrySkipPreviousAsync() } }
+                    if ($op) { $null = Await $op ([bool]) }
+                }
+            } catch {}
+            break
+        }
+        Start-Sleep -Milliseconds 50
+    }
 }

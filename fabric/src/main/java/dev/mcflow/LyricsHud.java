@@ -8,6 +8,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import org.joml.Matrix3x2f;
@@ -104,6 +105,8 @@ public final class LyricsHud implements HudElement {
         float lineHeight;
         /** Where rows may go, left and right of the anchor, in layout pixels. */
         double rowMinX, rowMaxX;
+        /** PvP mode: a sign floating over the target player (moved there every frame) instead of the normal placement. */
+        boolean following;
 
         View(Lyrics.Line line, int version, int height) {
             this.line = line;
@@ -138,6 +141,12 @@ public final class LyricsHud implements HudElement {
     private static final float BIG_TEXT = 0.085f, SMALL_TEXT = 0.065f;
     /** Typewriter: how long each letter takes to type in. */
     private static final float TYPE_MS = 45;
+    /** How long the old line takes to flow up out of the new one's way. */
+    private static final int PUSH_MS = 500;
+    /** On screen, at full bend: how far (share of the screen height) text at the screen's edge sits above/below the middle. */
+    private static final float SCREEN_BEND = 0.8f;
+    /** PvP mode: the big text's height in blocks, and how far above the target's head the sign floats. */
+    private static final double PVP_TEXT_BLOCKS = 0.35, PVP_ABOVE_HEAD = 1.2;
     /** When fading out word by word, each word starts this much after the one before. */
     private static final long WORD_OUT_STAGGER_MS = 70;
 
@@ -204,19 +213,23 @@ public final class LyricsHud implements HudElement {
         }
         closeViews(visible);
         Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
+        Player target = Pvp.target();
         visible.sort(Comparator.comparingLong(Lyrics.Line::startMs));
         for (int k = 0; k < visible.size(); k++) {
             Lyrics.Line line = visible.get(k);
             View view = views.get(line);
-            if (view == null || view.version != Settings.version() || view.height != h) {
-                view = layout(line, camera, w, h);
+            // starting or stopping following a target lays the line out again (back to your own placement after a fight)
+            if (view == null || view.version != Settings.version() || view.height != h || view.following != (target != null)) {
+                view = layout(line, camera, w, h, target != null);
                 views.put(line, view);
             }
-            // a newer line is coming in where this one is: slide this one up out of its way (eased) while it fades
+            if (target != null) follow(view, camera, target.getPosition(deltaTracker.getGameTimeDeltaPartialTick(true)).add(0, target.getBbHeight(), 0));
+            // a newer line is coming in where this one is: from the moment it starts showing, this one flows up out of
+            // its way while it fades (a gentle ease-out over at least half a second, so it glides rather than jumps)
             float push = 0;
             if (k + 1 < visible.size()) {
-                float t = Math.clamp((pos + s.fadeMs - visible.get(k + 1).startMs()) / (float) Math.max(250, s.fadeMs), 0f, 1f);
-                push = (1 - (1 - t) * (1 - t) * (1 - t)) * view.lineHeight;
+                float t = Math.clamp((pos + s.fadeMs - visible.get(k + 1).startMs()) / (float) Math.max(PUSH_MS, 2 * s.fadeMs), 0f, 1f);
+                push = (1 - (1 - t) * (1 - t)) * view.lineHeight * (s.flowDown ? -1 : 1);
             }
             drawLine(g, w, h, view, camera, pos, push);
         }
@@ -349,7 +362,7 @@ public final class LyricsHud implements HudElement {
      */
     private void drawLine(GuiGraphics g, int w, int h, View v, Camera camera, long pos, float push) {
         Settings s = Settings.get();
-        Settings.Placement mode = s.placement;
+        Settings.Placement mode = v.following ? Settings.Placement.PINNED : s.placement;
         boolean world3d = mode == Settings.Placement.PINNED && s.realWorld && WorldText.supported;
         float edge = h * EDGE_FADE;
         // first find where every letter is and how visible each whole word is
@@ -368,7 +381,7 @@ public final class LyricsHud implements HudElement {
             float[] p = world != null ? project(camera, world, w, h)
                     // the world slides the other way when you turn; further layers slide along a little
                     : new float[]{s.screenX * w + gl.lx - turnYaw * h / 90f * gl.layer * lag,
-                    s.screenY * h + gl.ly - push - turnPitch * h / 90f * gl.layer * lag, 0, 0};
+                    s.screenY * h + gl.ly + bendY(s, gl.lx, w, h) - push - turnPitch * h / 90f * gl.layer * lag, 0, 0};
             gl.screen = p;
             if (world3d) gl.occlusion = 1; // the depth buffer hides it now
             else occlude(gl, s, camera, world, p != null);
@@ -377,7 +390,7 @@ public final class LyricsHud implements HudElement {
             } else {
                 // 0 behind the player or off screen; fades near the edges (and, pinned, when you walk into it)
                 gl.view = p == null ? 0 : world3d ? 1 : Math.clamp(Math.min(Math.min(p[0], w - p[0]), Math.min(p[1], h - p[1])) / edge, 0f, 1f);
-                if (p != null && mode == Settings.Placement.PINNED) gl.view *= (float) Math.clamp((p[3] - NEAR_HIDE) / (NEAR_FULL - NEAR_HIDE), 0, 1);
+                if (p != null && mode == Settings.Placement.PINNED && !v.following) gl.view *= (float) Math.clamp((p[3] - NEAR_HIDE) / (NEAR_FULL - NEAR_HIDE), 0, 1);
             }
             gl.state.view = Math.max(gl.state.view, gl.view);
         }
@@ -396,7 +409,8 @@ public final class LyricsHud implements HudElement {
             // a glitching letter flickers while it arrives
             float noise = noise(gl, 1);
             if (s.appear == Settings.Appear.GLITCH && in < 1 && noise > 0.2f) a *= 0.25f;
-            if (mode != Settings.Placement.SCREEN) {
+            // (not while following a target: you spin around in a fight, and the words should be there when you look back)
+            if (mode != Settings.Placement.SCREEN && !v.following) {
                 if (a >= 1 && word.view >= 0.5f) word.seen = true;
                 // once a shown word has completely left view it stays gone, even if you look back; part-visible words stay
                 if (word.seen && word.view <= 0.01f) word.gone = true;
@@ -500,7 +514,9 @@ public final class LyricsHud implements HudElement {
                 }
                 case SCREEN -> {
                     g.pose().translate(p[0] + shakeX, p[1] + shakeY + lift);
-                    g.pose().rotate(extraTurn);
+                    // letters lean along the bend, like text on an arc
+                    float slope = bendY(s, gl.lx + 1, w, h) - bendY(s, gl.lx, w, h);
+                    g.pose().rotate((float) Math.atan(slope) + extraTurn);
                     g.pose().scale(pulse / RES, pulse / RES);
                     imageScale = pulse / RES;
                 }
@@ -604,10 +620,19 @@ public final class LyricsHud implements HudElement {
         Vec3 point = v.anchor.add(v.right.scale(x)).add(v.up.scale(y)).add(v.forward.scale((layer - MEAN_LAYER) * s.parallax * PARALLAX_DEPTH)); // centred on the sign's distance
         Vec3 toSign = v.anchor.subtract(camera.position());
         double distance = Math.abs(toSign.dot(v.forward));
-        double bend = s.warp * Math.clamp((WARP_START - distance) / (WARP_START - WARP_FULL), 0, 1);
+        double bend = v.following ? 0 : s.warp * Math.clamp((WARP_START - distance) / (WARP_START - WARP_FULL), 0, 1);
         if (bend <= 0) return point;
         double fromPlayer = x + toSign.dot(v.right); // sideways distance from the spot on the sign right in front of the player
         return point.subtract(v.forward.scale(Math.min(MAX_BEND, bend * BEND_CURVE * fromPlayer * fromPlayer)));
+    }
+
+    /**
+     * On screen: how far down (screen px) a letter {@code lx} px from the line's centre moves for the bend setting.
+     * A parabola through the middle: positive bends the ends down (an arch), negative bends them up (a smile).
+     */
+    private static float bendY(Settings s, float lx, int w, int h) {
+        float x = lx / (w / 2f);
+        return s.screenBend * SCREEN_BEND * h * x * x;
     }
 
     private static float wrapDegrees(float degrees) {
@@ -621,9 +646,27 @@ public final class LyricsHud implements HudElement {
      * keep their width); pinned, the offsets are positions on a plane facing where the player looked. Either way the
      * line looks like the flat version when it appears.
      */
-    private View layout(Lyrics.Line line, Camera camera, int w, int h) {
+    /**
+     * PvP mode: puts the line's sign over the target's head ({@code head} = top of their hitbox), bobbing gently and
+     * turned to face you, at a fixed size in blocks. Rows still sit left/right of the centre, so staggered lines flank them.
+     */
+    private static void follow(View v, Camera camera, Vec3 head) {
+        double bob = Math.sin(System.currentTimeMillis() * 0.002) * 0.08;
+        v.anchor = head.add(0, PVP_ABOVE_HEAD + bob, 0);
+        Vec3 toSign = v.anchor.subtract(camera.position());
+        if (toSign.lengthSqr() < 1e-4) return;
+        v.forward = toSign.normalize();
+        Vec3 level = new Vec3(-v.forward.z, 0, v.forward.x); // to the right, kept level so the text never tilts sideways
+        if (level.lengthSqr() < 1e-6) return; // straight above or below: keep last frame's sideways direction
+        v.right = level.normalize();
+        v.up = v.right.cross(v.forward).normalize();
+        v.pixelsPerBlock = (float) (v.height * BIG_TEXT * Settings.get().lyricSize / PVP_TEXT_BLOCKS);
+    }
+
+    private View layout(Lyrics.Line line, Camera camera, int w, int h, boolean following) {
         Settings s = Settings.get();
         View v = new View(line, Settings.version(), h);
+        v.following = following;
         float yaw = camera.yRot() + s.worldYaw;
         v.forward = Vec3.directionFromRotation(Math.clamp(camera.xRot() - s.worldRaise, -89.9f, 89.9f), yaw);
         v.right = Vec3.directionFromRotation(0, yaw + 90); // stays level, so text isn't tilted sideways
@@ -637,7 +680,7 @@ public final class LyricsHud implements HudElement {
         v.pitch0 = camera.xRot();
 
         // room for rows left/right of the anchor: the screen minus a margin, seen from where the line starts
-        double margin = w * 0.04, anchorX = s.placement == Settings.Placement.SCREEN ? s.screenX * w : w / 2.0;
+        double margin = w * 0.04, anchorX = s.placement == Settings.Placement.SCREEN && !following ? s.screenX * w : w / 2.0;
         v.rowMinX = -anchorX + margin;
         v.rowMaxX = w - anchorX - margin;
 

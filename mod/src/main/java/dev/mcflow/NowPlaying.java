@@ -7,6 +7,8 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -47,6 +49,18 @@ public final class NowPlaying {
             writtenSource = source;
         } catch (Exception e) {
             McFlow.LOGGER.warn("Couldn't save the music source choice", e);
+        }
+    }
+
+    /** Sends "play" (toggle), "next" or "previous" to the followed app; the helper picks it up within 50 ms. */
+    public static void control(String command) {
+        try {
+            Path dir = McFlow.configDir().resolve("mcflow"), tmp = dir.resolve("command.tmp");
+            Files.writeString(tmp, command);
+            // moved into place whole, so the helper never reads half a file
+            Files.move(tmp, dir.resolve("command.txt"), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception e) {
+            McFlow.LOGGER.warn("Couldn't send media command {}", command, e);
         }
     }
 

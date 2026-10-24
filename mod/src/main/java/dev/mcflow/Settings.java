@@ -69,6 +69,10 @@ public final class Settings {
     public float rowSpread = 0.02f;
     /** Staggered layout: put the first row on the right and the second on the left. */
     public boolean firstRowRight = false;
+    /** When a new line comes in, the old one moves down out of its way instead of up. */
+    public boolean flowDown = false;
+    /** On screen: bends each line into an arc around its middle, -1 (ends up) .. 1 (ends down), 0 = straight. */
+    public float screenBend = 0;
     /** World mode: degrees left (-) / right (+) of where you look, and degrees above the crosshair. */
     public float worldYaw = 0, worldRaise = 10;
     /** Pinned mode: how far ahead (blocks) the plane is put when a line starts. */
@@ -81,6 +85,9 @@ public final class Settings {
     public float parallax = 0f;
     /** World placements: blocks hide the text behind them, glass/water let it through dimmed and tinted. */
     public boolean blockDetection = true;
+    /** PvP mode: lyrics float above the last player you hit, until this many seconds pass without a hit. */
+    public boolean pvpMode = false;
+    public float pvpSeconds = 8;
     /** Blur and dim the lyrics and pill while a menu (inventory, chest, pause...) is open. */
     public boolean menuBlur = true;
     /** Screen mode: where the line's centre sits, as a share of the screen's width / height. */

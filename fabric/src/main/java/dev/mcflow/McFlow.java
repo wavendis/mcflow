@@ -7,11 +7,13 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
+import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.InteractionResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +33,11 @@ public class McFlow implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(SingAlong.PeerLine.TYPE, (line, ctx) -> PeerLyrics.receive(line));
         PeerLyrics.sender = ClientPlayNetworking::send;
         PeerLyrics.canSend = ClientPlayNetworking::canSend;
+        // PvP mode; also fires on the integrated server's thread in singleplayer, which we skip
+        AttackEntityCallback.EVENT.register((player, level, hand, entity, hit) -> {
+            if (level.isClientSide()) Pvp.onAttack(entity);
+            return InteractionResult.PASS;
+        });
         // pinned lyrics as real objects in the world ("Render in the world (3D)")
         WorldText.supported = true;
         WorldRenderEvents.AFTER_ENTITIES.register(ctx -> WorldText.render(ctx.matrices(), ctx.consumers()::getBuffer,
@@ -41,12 +48,18 @@ public class McFlow implements ClientModInitializer {
         KeyMapping settings = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.settings", InputConstants.KEY_K, keys));
         KeyMapping later = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.later", InputConstants.KEY_LBRACKET, keys));
         KeyMapping earlier = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.earlier", InputConstants.KEY_RBRACKET, keys));
+        KeyMapping play = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.play", InputConstants.KEY_M, keys));
+        KeyMapping previous = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.previous", InputConstants.KEY_COMMA, keys));
+        KeyMapping next = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.mcflow.next", InputConstants.KEY_PERIOD, keys));
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             WorldFx.tick(mc);
             PeerLyrics.tick(mc);
             while (settings.consumeClick()) mc.setScreen(new SettingsScreen(null));
             while (earlier.consumeClick()) nudge(NUDGE_MS);
             while (later.consumeClick()) nudge(-NUDGE_MS);
+            while (play.consumeClick()) NowPlaying.control("play");
+            while (previous.consumeClick()) NowPlaying.control("previous");
+            while (next.consumeClick()) NowPlaying.control("next");
         });
     }
 

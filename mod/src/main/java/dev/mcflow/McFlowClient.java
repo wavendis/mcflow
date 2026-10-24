@@ -16,6 +16,7 @@ import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.client.network.ClientPacketDistributor;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.network.registration.NetworkRegistry;
 
 /** Everything Mc'Flow does on the client: lyrics, HUD, settings, keys. */
@@ -26,6 +27,9 @@ public class McFlowClient {
     private static final KeyMapping SETTINGS = new KeyMapping("key.mcflow.settings", InputConstants.KEY_K, KEYS);
     private static final KeyMapping LATER = new KeyMapping("key.mcflow.later", InputConstants.KEY_LBRACKET, KEYS);
     private static final KeyMapping EARLIER = new KeyMapping("key.mcflow.earlier", InputConstants.KEY_RBRACKET, KEYS);
+    private static final KeyMapping PLAY = new KeyMapping("key.mcflow.play", InputConstants.KEY_M, KEYS);
+    private static final KeyMapping PREVIOUS = new KeyMapping("key.mcflow.previous", InputConstants.KEY_COMMA, KEYS);
+    private static final KeyMapping NEXT = new KeyMapping("key.mcflow.next", InputConstants.KEY_PERIOD, KEYS);
 
     public McFlowClient(IEventBus modBus, ModContainer container) {
         Settings.load();
@@ -47,6 +51,13 @@ public class McFlowClient {
             e.register(SETTINGS);
             e.register(LATER);
             e.register(EARLIER);
+            e.register(PLAY);
+            e.register(PREVIOUS);
+            e.register(NEXT);
+        });
+        // fires on the client too when you hit someone (and in singleplayer also on the server thread, which we skip)
+        NeoForge.EVENT_BUS.addListener(AttackEntityEvent.class, e -> {
+            if (e.getEntity().level().isClientSide()) Pvp.onAttack(e.getTarget());
         });
         NeoForge.EVENT_BUS.addListener(ClientTickEvent.Post.class, e -> {
             Minecraft mc = Minecraft.getInstance();
@@ -55,6 +66,9 @@ public class McFlowClient {
             while (SETTINGS.consumeClick()) mc.gui.setScreen(new SettingsScreen(null));
             while (EARLIER.consumeClick()) nudge(NUDGE_MS);
             while (LATER.consumeClick()) nudge(-NUDGE_MS);
+            while (PLAY.consumeClick()) NowPlaying.control("play");
+            while (PREVIOUS.consumeClick()) NowPlaying.control("previous");
+            while (NEXT.consumeClick()) NowPlaying.control("next");
         });
     }
 
