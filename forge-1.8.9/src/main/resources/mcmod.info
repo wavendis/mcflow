@@ -1,0 +1,16 @@
+[
+  {
+    "modid": "${modid}",
+    "name": "Mc'Flow",
+    "description": "Synced lyrics for whatever you're listening to, written in the sky word by word.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "url": "https://github.com/wavendis/mcflow",
+    "updateUrl": "",
+    "authorList": ["Mc'Flow contributors"],
+    "credits": "",
+    "logoFile": "assets/mcflow/logo.png",
+    "screenshots": [],
+    "dependencies": []
+  }
+]

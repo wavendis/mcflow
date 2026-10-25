@@ -1,5 +1,6 @@
 package dev.mcflow;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -9,6 +10,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -99,8 +101,12 @@ public final class NowPlaying {
     }
 
     private static void update(String line) {
-        JsonObject o = JsonParser.parseString(line).getAsJsonObject();
-        if (o.has("apps")) apps = o.getAsJsonArray("apps").asList().stream().map(e -> e.getAsString()).toList();
+        JsonObject o = new JsonParser().parse(line).getAsJsonObject(); // old Gson API: also runs on 1.8.9's Gson 2.2.4
+        if (o.has("apps")) {
+            List<String> ids = new ArrayList<>();
+            for (JsonElement e : o.getAsJsonArray("apps")) ids.add(e.getAsString());
+            apps = ids;
+        }
         writeSource();
         if (!o.has("title")) {
             track = null;

@@ -9,6 +9,7 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 /**
@@ -56,6 +57,22 @@ public final class WorldText {
             vertex(vc, last, q.bottomLeft(), camera, 0, 1, q.color());
             vertex(vc, last, q.bottomRight(), camera, 1, 1, q.color());
             vertex(vc, last, q.topRight(), camera, 1, 0, q.color());
+        }
+    }
+
+    /**
+     * The same quads for renderers that collect geometry and draw it later (Fabric 26.x's submit system):
+     * {@code submit} gets each quad's render type and a writer that adds its four vertices to the pose and buffer it's given.
+     */
+    public static void submit(BiConsumer<RenderType, BiConsumer<PoseStack.Pose, VertexConsumer>> submit, Vec3 camera) {
+        if (QUADS.isEmpty() || System.currentTimeMillis() - queuedAt > STALE_MS) return;
+        for (Quad q : List.copyOf(QUADS)) {
+            submit.accept(RenderTypes.text(q.texture()), (pose, vc) -> {
+                vertex(vc, pose, q.topLeft(), camera, 0, 0, q.color());
+                vertex(vc, pose, q.bottomLeft(), camera, 0, 1, q.color());
+                vertex(vc, pose, q.bottomRight(), camera, 1, 1, q.color());
+                vertex(vc, pose, q.topRight(), camera, 1, 0, q.color());
+            });
         }
     }
 

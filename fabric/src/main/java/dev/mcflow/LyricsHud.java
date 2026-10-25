@@ -22,6 +22,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * The "now playing" pill plus the big word-by-word lyric. Everything is drawn in physical screen pixels from
@@ -87,6 +88,8 @@ public final class LyricsHud implements HudElement {
     private static final class View {
         final Lyrics.Line line;
         final int version, height;
+        /** Screen width when laid out (for the bend, which is measured against it). */
+        int width;
         final List<Glyph> glyphs = new ArrayList<>();
         /**
          * The line's own frame: where it started, its sideways direction and its up direction. On the sphere, rows run
@@ -147,6 +150,10 @@ public final class LyricsHud implements HudElement {
     private static final float SCREEN_BEND = 0.8f;
     /** PvP mode: the big text's height in blocks, and how far above the target's head the sign floats. */
     private static final double PVP_TEXT_BLOCKS = 0.35, PVP_ABOVE_HEAD = 1.2;
+    /** PvP scattered words: how far below the top of the target's head their ring is centred (blocks). */
+    private static final double PVP_BODY_MIDDLE = 0.9;
+    /** Turn between successive scattered words: spreads any number of them evenly around the circle. */
+    private static final double GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
     /** When fading out word by word, each word starts this much after the one before. */
     private static final long WORD_OUT_STAGGER_MS = 70;
 
@@ -190,6 +197,7 @@ public final class LyricsHud implements HudElement {
             playing = true;
         }
         drawPeers(g);
+        drawHits(g, deltaTracker.getGameTimeDeltaPartialTick(true));
         GlyphCache.uploadSome(4); // a few per frame keeps the upload work invisible
         if (track != null) prepareLetters(lines, s);
         if (track == null) {
@@ -227,7 +235,7 @@ public final class LyricsHud implements HudElement {
             // a newer line is coming in where this one is: from the moment it starts showing, this one flows up out of
             // its way while it fades (a gentle ease-out over at least half a second, so it glides rather than jumps)
             float push = 0;
-            if (k + 1 < visible.size()) {
+            if (k + 1 < visible.size() && !(view.following && s.pvpScatter)) { // (scattered words just fade where they are)
                 float t = Math.clamp((pos + s.fadeMs - visible.get(k + 1).startMs()) / (float) Math.max(PUSH_MS, 2 * s.fadeMs), 0f, 1f);
                 push = (1 - (1 - t) * (1 - t)) * view.lineHeight * (s.flowDown ? -1 : 1);
             }
@@ -270,6 +278,15 @@ public final class LyricsHud implements HudElement {
         g.pose().pushMatrix();
         g.pose().scale(1f / window.getGuiScale(), 1f / window.getGuiScale());
         PeerLyrics.draw(g, window.getWidth(), window.getHeight(), Minecraft.getInstance().gameRenderer.getMainCamera());
+        g.pose().popMatrix();
+    }
+
+    /** Comic hit effects over the players you hit, in physical pixels like the rest. */
+    private static void drawHits(GuiGraphics g, float partialTick) {
+        Window window = Minecraft.getInstance().getWindow();
+        g.pose().pushMatrix();
+        g.pose().scale(1f / window.getGuiScale(), 1f / window.getGuiScale());
+        HitFx.draw(g, partialTick);
         g.pose().popMatrix();
     }
 
@@ -455,6 +472,11 @@ public final class LyricsHud implements HudElement {
                 case FLOAT -> extraY += (float) Math.sin(now * 0.0025 + gl.order * 1.3) * h * 0.006f;
                 default -> {}
             }
+            if (v.following && s.pvpScatter) { // scattered PvP words drift about, each word on its own slow loop
+                double t = now * 0.0012 + gl.order * 2.1;
+                extraX += (float) Math.sin(t) * h * 0.008f;
+                extraY += (float) Math.cos(t * 1.3) * h * 0.006f;
+            }
             switch (s.exit) {
                 case SCATTER -> { // letters fly apart from the middle of the line
                     extraX += Math.signum(gl.lx) * k * h * 0.12f * (0.6f + 0.4f * Math.abs(still(gl, 4)));
@@ -616,6 +638,8 @@ public final class LyricsHud implements HudElement {
      * closer they are), capped at {@link #MAX_BEND} blocks so it never folds over.
      */
     private static Vec3 onSurface(View v, Camera camera, Settings s, double lx, double ly, float layer) {
+        // PvP: the sign over the target arches like the on-screen text (same shape, in the same layout pixels)
+        if (v.following && !s.pvpScatter) ly += bendY(s, (float) lx, v.width, v.height);
         double x = lx / v.pixelsPerBlock, y = -ly / v.pixelsPerBlock; // blocks along the sign
         Vec3 point = v.anchor.add(v.right.scale(x)).add(v.up.scale(y)).add(v.forward.scale((layer - MEAN_LAYER) * s.parallax * PARALLAX_DEPTH)); // centred on the sign's distance
         Vec3 toSign = v.anchor.subtract(camera.position());
@@ -641,18 +665,13 @@ public final class LyricsHud implements HudElement {
     }
 
     /**
-     * Lays the line out in screen pixels around its anchor and fixes where it lives: for the sphere, every letter's
-     * offset becomes angles in the line's own frame (rows follow rings around {@code up}, spread by 1/cos(up) so letters
-     * keep their width); pinned, the offsets are positions on a plane facing where the player looked. Either way the
-     * line looks like the flat version when it appears.
-     */
-    /**
      * PvP mode: puts the line's sign over the target's head ({@code head} = top of their hitbox), bobbing gently and
-     * turned to face you, at a fixed size in blocks. Rows still sit left/right of the centre, so staggered lines flank them.
+     * turned to face you, at a fixed size in blocks. Rows still sit left/right of the centre, so staggered lines flank
+     * them. With scattered words the sign's centre is the middle of their body instead, for the words to surround.
      */
     private static void follow(View v, Camera camera, Vec3 head) {
         double bob = Math.sin(System.currentTimeMillis() * 0.002) * 0.08;
-        v.anchor = head.add(0, PVP_ABOVE_HEAD + bob, 0);
+        v.anchor = head.add(0, (Settings.get().pvpScatter ? -PVP_BODY_MIDDLE : PVP_ABOVE_HEAD) + bob, 0);
         Vec3 toSign = v.anchor.subtract(camera.position());
         if (toSign.lengthSqr() < 1e-4) return;
         v.forward = toSign.normalize();
@@ -663,9 +682,52 @@ public final class LyricsHud implements HudElement {
         v.pixelsPerBlock = (float) (v.height * BIG_TEXT * Settings.get().lyricSize / PVP_TEXT_BLOCKS);
     }
 
+    /**
+     * PvP scattered words: moves each word cluster (at most two words, see {@link Lyrics}) to its own random spot on a
+     * ring around the target's body, in layout pixels of the sign. Successive clusters go round by the golden angle (plus
+     * a little jitter), so they spread all around the player instead of bunching up on one side.
+     */
+    private static void scatter(View v, int h, Settings s) {
+        double perBlock = h * BIG_TEXT * s.lyricSize / PVP_TEXT_BLOCKS;
+        Map<WordState, float[]> centres = new IdentityHashMap<>(); // {sum x, sum y, letters} per word
+        for (Glyph gl : v.glyphs) {
+            float[] c = centres.computeIfAbsent(gl.state, k -> new float[3]);
+            c[0] += gl.lx;
+            c[1] += gl.ly;
+            c[2]++;
+        }
+        ThreadLocalRandom r = ThreadLocalRandom.current();
+        double angle = r.nextDouble(Math.PI * 2);
+        Map<WordState, float[]> shifts = new IdentityHashMap<>();
+        List<Glyph> moved = new ArrayList<>(v.glyphs.size());
+        for (Glyph gl : v.glyphs) {
+            float[] shift = shifts.get(gl.state);
+            if (shift == null) { // the word's first letter: pick its spot
+                angle += GOLDEN_ANGLE + r.nextDouble(-0.4, 0.4);
+                double across = Math.cos(angle) * r.nextDouble(1.0, 1.6) * perBlock, down = Math.sin(angle) * r.nextDouble(0.7, 1.15) * perBlock;
+                float[] c = centres.get(gl.state);
+                shift = new float[]{(float) (across - c[0] / c[2]), (float) (down - c[1] / c[2])};
+                shifts.put(gl.state, shift);
+                gl.state.firstX += shift[0];
+            }
+            moved.add(new Glyph(gl.image, gl.word, gl.state, gl.noun, gl.vocal, gl.span, gl.order, gl.layer, gl.across, gl.up,
+                    gl.lx + shift[0], gl.ly + shift[1]));
+            moved.getLast().effects = gl.effects;
+        }
+        v.glyphs.clear();
+        v.glyphs.addAll(moved);
+    }
+
+    /**
+     * Lays the line out in screen pixels around its anchor and fixes where it lives: for the sphere, every letter's
+     * offset becomes angles in the line's own frame (rows follow rings around {@code up}, spread by 1/cos(up) so letters
+     * keep their width); pinned, the offsets are positions on a plane facing where the player looked. Either way the
+     * line looks like the flat version when it appears.
+     */
     private View layout(Lyrics.Line line, Camera camera, int w, int h, boolean following) {
         Settings s = Settings.get();
         View v = new View(line, Settings.version(), h);
+        v.width = w;
         v.following = following;
         float yaw = camera.yRot() + s.worldYaw;
         v.forward = Vec3.directionFromRotation(Math.clamp(camera.xRot() - s.worldRaise, -89.9f, 89.9f), yaw);
@@ -715,6 +777,7 @@ public final class LyricsHud implements HudElement {
                 placeRow(v, words.subList(split, words.size()), big, -firstSide * gap, -firstSide, -rowGap / 2, 1.1f, nouns, vocals, counters, sink);
             }
         }
+        if (following && s.pvpScatter) scatter(v, h, s);
         return v;
     }
 

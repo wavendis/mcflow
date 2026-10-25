@@ -88,6 +88,15 @@ public final class Settings {
     /** PvP mode: lyrics float above the last player you hit, until this many seconds pass without a hit. */
     public boolean pvpMode = false;
     public float pvpSeconds = 8;
+    /** PvP mode: instead of a line over their head, the words float around the target, each cluster in its own random spot. */
+    public boolean pvpScatter = false;
+    /** A random comic effect (BOOM!, POW!...) pops up around a player each time you hit them. */
+    public boolean hitEffects = false;
+    /** Hit effects: how long they take to pop in and to fade out (ms), and their size (x the random 0.7..1.5 blocks). */
+    public int hitFadeInMs = 140, hitFadeOutMs = 280;
+    public float hitSize = 1;
+    /** Hit effects: at most this many on screen at once; a new hit replaces the oldest. */
+    public int hitMax = 8;
     /** Blur and dim the lyrics and pill while a menu (inventory, chest, pause...) is open. */
     public boolean menuBlur = true;
     /** Screen mode: where the line's centre sits, as a share of the screen's width / height. */
@@ -236,7 +245,7 @@ public final class Settings {
             try (java.util.zip.GZIPInputStream zip = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(zipped))) {
                 text = new String(zip.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
             }
-            com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(text).getAsJsonObject();
+            com.google.gson.JsonObject json = new com.google.gson.JsonParser().parse(text).getAsJsonObject(); // old API: 1.8.9 has Gson 2.2.4
             PERSONAL.forEach(json::remove);
             com.google.gson.JsonObject mine = GSON.toJsonTree(current).getAsJsonObject();
             json.entrySet().forEach(e -> mine.add(e.getKey(), e.getValue()));

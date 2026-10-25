@@ -11,7 +11,9 @@ It works on any server or in singleplayer. Installing it on the server too is op
 | Version | Loader | Folder |
 |---|---|---|
 | Minecraft 26.3 | NeoForge 26.3.0.97+ | [`mod/`](mod) |
+| Minecraft 26.3 | Fabric Loader 0.20.1+ with Fabric API | [`fabric-26.3/`](fabric-26.3) |
 | Minecraft 1.21.11 | Fabric Loader 0.20.1+ with Fabric API | [`fabric/`](fabric) |
+| Minecraft 1.8.9 | Forge 11.15.1.2318+ | [`forge-1.8.9/`](forge-1.8.9) |
 
 > **Windows only (for now).** Mc'Flow finds out what's playing and hears the beat through Windows features. On other systems the mod loads but shows nothing.
 
@@ -79,7 +81,7 @@ Settings are saved to `config/mcflow.json`.
 
 ## Installing
 
-1. Install NeoForge for Minecraft 26.3, **or** Fabric Loader plus [Fabric API](https://modrinth.com/mod/fabric-api) for 1.21.11.
+1. Install NeoForge for Minecraft 26.3, **or** Fabric Loader plus [Fabric API](https://modrinth.com/mod/fabric-api) for 26.3 or 1.21.11, **or** Forge for 1.8.9.
 2. Put `mcflow-<version>.jar` in your `mods` folder.
 3. Play some music and join a world.
 
@@ -119,15 +121,24 @@ The two builds share almost all their code; only the screen, HUD hooks and entry
 ## Building
 
 - **NeoForge (`mod/`):** any JDK 21+ can run Gradle; it downloads Java 25 for compiling by itself.
-- **Fabric (`fabric/`):** run Gradle with JDK 25, because the Fabric build tooling requires it.
+- **Fabric (`fabric-26.3/`, `fabric/`):** run Gradle with JDK 25, because the Fabric build tooling requires it.
+- **Forge 1.8.9 (`forge-1.8.9/`):** run Gradle with JDK 21. The code is shared with the modern versions and written in modern Java; it's compiled with Java 21 and turned into Java 8 bytecode by [JvmDowngrader](https://github.com/unimined/JvmDowngrader), so it runs on 1.8.9. Use `./gradlew runMc` for the test client (Loom's own `runClient` doesn't work with this Gradle).
 
 ```bash
 # NeoForge 26.3
-cd mod && ./gradlew build          # -> mod/build/libs/mcflow-1.2.0.jar
+cd mod && ./gradlew build          # -> mod/build/libs/mcflow-1.3.0.jar
 ./gradlew runClient                # test client
 
+# Fabric 26.3
+cd fabric-26.3 && ./gradlew build  # -> fabric-26.3/build/libs/mcflow-1.3.0.jar
+./gradlew runClient                # test client (includes Iris + Sodium for shader testing)
+
+# Forge 1.8.9
+cd forge-1.8.9 && ./gradlew build  # -> forge-1.8.9/build/libs/mcflow-1.3.0.jar
+./gradlew runMc                    # test client
+
 # Fabric 1.21.11
-cd fabric && ./gradlew build       # -> fabric/build/libs/mcflow-1.2.0.jar
+cd fabric && ./gradlew build       # -> fabric/build/libs/mcflow-1.3.0.jar
 ./gradlew runClient                # test client (includes Iris + Sodium for shader testing)
 ```
 

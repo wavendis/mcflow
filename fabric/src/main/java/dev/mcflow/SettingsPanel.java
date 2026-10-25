@@ -52,6 +52,8 @@ public final class SettingsPanel {
     private float scroll, maxScroll;
     private boolean dirty = true;
     private int lastW, lastH, lastVersion = -1;
+    /** The newer release the header's badge was drawn for (null = no badge). */
+    private String shownUpdate;
 
     // layout of the current paint, in panel pixels
     private int panelX, panelY, panelW, panelH, headerH, footerH, pad;
@@ -80,7 +82,7 @@ public final class SettingsPanel {
     public boolean needsRepaint(int w, int h) {
         boolean statusChanged = status != null && System.currentTimeMillis() > statusUntil;
         if (statusChanged) status = null;
-        return dirty || statusChanged || w != lastW || h != lastH || Settings.version() != lastVersion;
+        return dirty || statusChanged || w != lastW || h != lastH || Settings.version() != lastVersion || UpdateCheck.newer() != shownUpdate;
     }
 
     public BufferedImage paint(int w, int h) {
@@ -117,6 +119,7 @@ public final class SettingsPanel {
             g.fillOval(pad, px(38), px(14), px(14));
         }
         text("Mc'Flow", pad + (LOGO != null ? logoW + px(10) : px(26)), px(54), font(26, Font.BOLD), TextArt.PILL_TEXT);
+        updateBadge(s);
         text("Settings apply live and save automatically", pad, px(80), font(14, Font.PLAIN), DIM);
         tabs(px(100));
 
@@ -242,8 +245,7 @@ public final class SettingsPanel {
         } else {
             slider("Horizontal", s.screenX, 0, 1, 0.01f, Math.round(s.screenX * 100) + "%", v -> s.screenX = v);
             slider("Vertical", s.screenY, 0, 1, 0.01f, Math.round(s.screenY * 100) + "%", v -> s.screenY = v);
-            String bend = Math.abs(s.screenBend) < 0.01f ? "straight" : Math.round(Math.abs(s.screenBend) * 100) + "% " + (s.screenBend > 0 ? "arch" : "smile");
-            slider("Bend", s.screenBend, -1, 1, 0.05f, bend, v -> s.screenBend = Math.abs(v) < 0.01f ? 0 : v);
+            bendSlider(s);
         }
 
         if (s.placement == Settings.Placement.PINNED) {
@@ -262,7 +264,23 @@ public final class SettingsPanel {
         if (s.pvpMode) {
             slider("Back to normal after", s.pvpSeconds, 2, 30, 1, Math.round(s.pvpSeconds) + " s without a hit", v -> s.pvpSeconds = v);
             hint("Any new hit restarts the timer; hitting someone else switches to them");
+            toggle("Scatter the words around them", s.pvpScatter, v -> s.pvpScatter = v);
+            // the arch only applies to a line over their head; on screen the slider is already up in Position
+            if (!s.pvpScatter && s.placement != Settings.Placement.SCREEN) bendSlider(s);
         }
+        toggle("Comic hit effects (BOOM! POW!)", s.hitEffects, v -> s.hitEffects = v);
+        if (s.hitEffects) {
+            slider("Effect size", s.hitSize, 0.3f, 3, 0.05f, Math.round(s.hitSize * 100) + "% (still varies)", v -> s.hitSize = v);
+            slider("Effects at once", s.hitMax, 1, 20, 1, s.hitMax == 1 ? "1 (newest only)" : "up to " + s.hitMax, v -> s.hitMax = Math.round(v));
+            slider("Effect pop in", s.hitFadeInMs, 0, 1000, 10, s.hitFadeInMs + " ms", v -> s.hitFadeInMs = Math.round(v));
+            slider("Effect fade out", s.hitFadeOutMs, 0, 2000, 10, s.hitFadeOutMs + " ms", v -> s.hitFadeOutMs = Math.round(v));
+        }
+    }
+
+    /** Arches the text (on screen, and over a PvP target). */
+    private void bendSlider(Settings s) {
+        String bend = Math.abs(s.screenBend) < 0.01f ? "straight" : Math.round(Math.abs(s.screenBend) * 100) + "% " + (s.screenBend > 0 ? "arch" : "smile");
+        slider("Bend", s.screenBend, -1, 1, 0.05f, bend, v -> s.screenBend = Math.abs(v) < 0.01f ? 0 : v);
     }
 
     private void beatTab(Settings s) {
@@ -315,6 +333,22 @@ public final class SettingsPanel {
 
         section("Reset");
         button("Reset everything to default", Settings::reset);
+    }
+
+    /** Top right of the header, when GitHub has a newer release: a badge that opens the releases page. */
+    private void updateBadge(Settings s) {
+        UpdateCheck.start(); // once per game, in the background; the panel repaints when the answer arrives
+        shownUpdate = UpdateCheck.newer();
+        if (shownUpdate == null) return;
+        Font f = font(13, Font.BOLD);
+        String label = "New release available  ›";
+        int h = px(30), w = metrics(f).stringWidth(label) + px(26), x = panelW - pad - w, top = px(44) - h / 2;
+        Rectangle badge = new Rectangle(x, top, w, h);
+        hits.add(new Hit(badge, UpdateCheck::openReleases, null, null)); // in the fixed header, not the scrolling part
+        Color accent = new Color(s.accent);
+        g.setColor(isHovered(badge) ? accent.brighter() : accent);
+        g.fill(new RoundRectangle2D.Float(x, top, w, h, h, h));
+        text(label, x + px(13), top + h / 2 + metrics(f).getAscent() / 2 - px(2), f, Color.WHITE);
     }
 
     /** A small grey note under a control. */

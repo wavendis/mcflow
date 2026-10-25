@@ -5,11 +5,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -42,7 +41,6 @@ public final class Lyrics {
     private static final Pattern CHANNEL_NOISE = Pattern.compile("(VEVO|\\s*-\\s*Topic|\\s*Official)$", Pattern.CASE_INSENSITIVE);
     /** Accept a result this close to the playing track's length without trying more queries. */
     private static final long GOOD_MATCH_MS = 10_000;
-    private static final HttpClient HTTP = HttpClient.newHttpClient();
 
     /** Results per track (empty list = no lyrics), so flipping between media sessions doesn't refetch. */
     private static final Map<NowPlaying.Track, List<Line>> CACHE = new ConcurrentHashMap<>();
@@ -113,14 +111,18 @@ public final class Lyrics {
         return best == null ? null : best.get("syncedLyrics").getAsString();
     }
 
+    // plain HttpURLConnection and the old Gson parser API: the same code runs on Minecraft 1.8.9 (Java 8, Gson 2.2.4)
     private static JsonArray search(String query) {
-        HttpRequest req = HttpRequest.newBuilder(URI.create("https://lrclib.net/api/search?" + query))
-                .header("User-Agent", "McFlow (Minecraft mod)")
-                .build();
         try {
-            HttpResponse<String> res = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-            JsonElement body = JsonParser.parseString(res.body());
-            return res.statusCode() == 200 && body.isJsonArray() ? body.getAsJsonArray() : new JsonArray();
+            HttpURLConnection c = (HttpURLConnection) URI.create("https://lrclib.net/api/search?" + query).toURL().openConnection();
+            c.setRequestProperty("User-Agent", "McFlow (Minecraft mod)");
+            c.setConnectTimeout(10_000);
+            c.setReadTimeout(15_000);
+            if (c.getResponseCode() != 200) return new JsonArray();
+            try (InputStream in = c.getInputStream()) {
+                JsonElement body = new JsonParser().parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+                return body.isJsonArray() ? body.getAsJsonArray() : new JsonArray();
+            }
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

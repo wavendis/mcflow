@@ -13,6 +13,7 @@ final class Pvp {
 
     /** Called by the loader's client-side attack event. */
     static void onAttack(Entity hit) {
+        HitFx.onHit(hit);
         if (Settings.get().pvpMode && hit instanceof Player p && p != Minecraft.getInstance().player) {
             target = p;
             hitAt = System.currentTimeMillis();

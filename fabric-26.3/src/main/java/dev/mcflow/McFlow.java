@@ -1,0 +1,80 @@
+package dev.mcflow;
+
+import com.mojang.blaze3d.platform.InputConstants;
+import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
+import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.InteractionResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.nio.file.Path;
+
+public class McFlow implements ClientModInitializer {
+    public static final String MODID = "mcflow";
+    public static final Logger LOGGER = LoggerFactory.getLogger(MODID);
+
+    private static final int NUDGE_MS = 100;
+
+    @Override
+    public void onInitializeClient() {
+        Settings.load();
+        NowPlaying.start();
+        Beat.start();
+        ClientPlayNetworking.registerGlobalReceiver(SingAlong.PeerLine.TYPE, (line, ctx) -> PeerLyrics.receive(line));
+        PeerLyrics.sender = ClientPlayNetworking::send;
+        PeerLyrics.canSend = ClientPlayNetworking::canSend;
+        // PvP mode; also fires on the integrated server's thread in singleplayer, which we skip
+        AttackEntityCallback.EVENT.register((player, level, hand, entity, hit) -> {
+            if (level.isClientSide()) Pvp.onAttack(entity);
+            return InteractionResult.PASS;
+        });
+        // pinned lyrics as real objects in the world ("Render in the world (3D)")
+        WorldText.supported = true;
+        // 26.x collects world geometry first and draws it later, so the letters go in as custom geometry submits
+        LevelRenderEvents.COLLECT_SUBMITS.register(ctx -> WorldText.submit(
+                (type, quad) -> ctx.submitNodeCollector().submitCustomGeometry(ctx.poseStack(), type, quad::accept),
+                Minecraft.getInstance().gameRenderer.mainCamera().position()));
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MODID, "lyrics"), new LyricsHud());
+
+        KeyMapping.Category keys = KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MODID, "lyrics"));
+        KeyMapping settings = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.mcflow.settings", InputConstants.KEY_K, keys));
+        KeyMapping later = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.mcflow.later", InputConstants.KEY_LBRACKET, keys));
+        KeyMapping earlier = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.mcflow.earlier", InputConstants.KEY_RBRACKET, keys));
+        KeyMapping play = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.mcflow.play", InputConstants.KEY_M, keys));
+        KeyMapping previous = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.mcflow.previous", InputConstants.KEY_COMMA, keys));
+        KeyMapping next = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.mcflow.next", InputConstants.KEY_PERIOD, keys));
+        ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+            WorldFx.tick(mc);
+            PeerLyrics.tick(mc);
+            while (settings.consumeClick()) mc.gui.setScreen(new SettingsScreen(null));
+            while (earlier.consumeClick()) nudge(NUDGE_MS);
+            while (later.consumeClick()) nudge(-NUDGE_MS);
+            while (play.consumeClick()) NowPlaying.control("play");
+            while (previous.consumeClick()) NowPlaying.control("previous");
+            while (next.consumeClick()) NowPlaying.control("next");
+        });
+    }
+
+    static Path configDir() {
+        return FabricLoader.getInstance().getConfigDir();
+    }
+
+    /** Positive offsets show lyrics earlier, negative later. */
+    private static void nudge(int deltaMs) {
+        Settings s = Settings.get();
+        s.offsetMs = Math.clamp(s.offsetMs + deltaMs, -5000, 5000);
+        Settings.changed();
+        Settings.save();
+        Minecraft.getInstance().gui.hud.setOverlayMessage(Component.translatable("mcflow.offset", (s.offsetMs > 0 ? "+" : "") + s.offsetMs), false);
+    }
+}
