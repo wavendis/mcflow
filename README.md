@@ -126,19 +126,19 @@ The two builds share almost all their code; only the screen, HUD hooks and entry
 
 ```bash
 # NeoForge 26.3
-cd mod && ./gradlew build          # -> mod/build/libs/mcflow-1.4.0.jar
+cd mod && ./gradlew build          # -> mod/build/libs/mcflow-1.4.1.jar
 ./gradlew runClient                # test client
 
 # Fabric 26.3
-cd fabric-26.3 && ./gradlew build  # -> fabric-26.3/build/libs/mcflow-1.4.0.jar
+cd fabric-26.3 && ./gradlew build  # -> fabric-26.3/build/libs/mcflow-1.4.1.jar
 ./gradlew runClient                # test client (includes Iris + Sodium for shader testing)
 
 # Forge 1.8.9
-cd forge-1.8.9 && ./gradlew build  # -> forge-1.8.9/build/libs/mcflow-1.4.0.jar
+cd forge-1.8.9 && ./gradlew build  # -> forge-1.8.9/build/libs/mcflow-1.4.1.jar
 ./gradlew runMc                    # test client
 
 # Fabric 1.21.11
-cd fabric && ./gradlew build       # -> fabric/build/libs/mcflow-1.4.0.jar
+cd fabric && ./gradlew build       # -> fabric/build/libs/mcflow-1.4.1.jar
 ./gradlew runClient                # test client (includes Iris + Sodium for shader testing)
 ```
 

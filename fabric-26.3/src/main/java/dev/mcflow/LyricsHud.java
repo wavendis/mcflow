@@ -150,8 +150,11 @@ public final class LyricsHud implements HudElement {
     private static final float SCREEN_BEND = 0.8f;
     /** PvP mode: the big text's height in blocks, and how far above the target's head the sign floats. */
     private static final double PVP_TEXT_BLOCKS = 0.35, PVP_ABOVE_HEAD = 1.2;
-    /** PvP scattered words: how far below the top of the target's head their ring is centred (blocks). */
-    private static final double PVP_BODY_MIDDLE = 0.9;
+    /**
+     * PvP scattered words: how far below the top of the target's head their ring is centred (blocks: chest height),
+     * and its reach up/down, so the words stay between the upper legs and just above the head, never in the ground.
+     */
+    private static final double PVP_CHEST = 0.55, PVP_REACH_MIN = 0.4, PVP_REACH_MAX = 0.65;
     /** Turn between successive scattered words: spreads any number of them evenly around the circle. */
     private static final double GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
     /** When fading out word by word, each word starts this much after the one before. */
@@ -677,11 +680,11 @@ public final class LyricsHud implements HudElement {
     /**
      * PvP mode: puts the line's sign over the target's head ({@code head} = top of their hitbox), bobbing gently and
      * turned to face you, at a fixed size in blocks. Rows still sit left/right of the centre, so staggered lines flank
-     * them. With scattered words the sign's centre is the middle of their body instead, for the words to surround.
+     * them. With scattered words the sign's centre is their chest instead, for the words to surround.
      */
     private static void follow(View v, Camera camera, Vec3 head) {
         double bob = Math.sin(System.currentTimeMillis() * 0.002) * 0.08;
-        v.anchor = head.add(0, (Settings.get().pvpScatter ? -PVP_BODY_MIDDLE : PVP_ABOVE_HEAD) + bob, 0);
+        v.anchor = head.add(0, (Settings.get().pvpScatter ? -PVP_CHEST : PVP_ABOVE_HEAD) + bob, 0);
         Vec3 toSign = v.anchor.subtract(camera.position());
         if (toSign.lengthSqr() < 1e-4) return;
         v.forward = toSign.normalize();
@@ -689,7 +692,12 @@ public final class LyricsHud implements HudElement {
         if (level.lengthSqr() < 1e-6) return; // straight above or below: keep last frame's sideways direction
         v.right = level.normalize();
         v.up = v.right.cross(v.forward).normalize();
-        v.pixelsPerBlock = (float) (v.height * BIG_TEXT * Settings.get().lyricSize / PVP_TEXT_BLOCKS);
+        v.pixelsPerBlock = (float) pvpPixelsPerBlock(v.height, Settings.get());
+    }
+
+    /** PvP: layout pixels per block on the sign over the target; smaller = bigger text (the scattered words' own size). */
+    private static double pvpPixelsPerBlock(int h, Settings s) {
+        return h * BIG_TEXT * s.lyricSize / (PVP_TEXT_BLOCKS * (s.pvpScatter ? s.scatterSize : 1));
     }
 
     /**
@@ -698,7 +706,7 @@ public final class LyricsHud implements HudElement {
      * a little jitter), so they spread all around the player instead of bunching up on one side.
      */
     private static void scatter(View v, int h, Settings s) {
-        double perBlock = h * BIG_TEXT * s.lyricSize / PVP_TEXT_BLOCKS;
+        double perBlock = pvpPixelsPerBlock(h, s); // spots are in blocks, whatever size the words are
         Map<WordState, float[]> centres = new IdentityHashMap<>(); // {sum x, sum y, letters} per word
         for (Glyph gl : v.glyphs) {
             float[] c = centres.computeIfAbsent(gl.state, k -> new float[3]);
@@ -714,7 +722,8 @@ public final class LyricsHud implements HudElement {
             float[] shift = shifts.get(gl.state);
             if (shift == null) { // the word's first letter: pick its spot
                 angle += GOLDEN_ANGLE + r.nextDouble(-0.4, 0.4);
-                double across = Math.cos(angle) * r.nextDouble(1.0, 1.6) * perBlock, down = Math.sin(angle) * r.nextDouble(0.7, 1.15) * perBlock;
+                double across = Math.cos(angle) * r.nextDouble(1.0, 1.6) * perBlock;
+                double down = Math.sin(angle) * r.nextDouble(PVP_REACH_MIN, PVP_REACH_MAX) * perBlock;
                 float[] c = centres.get(gl.state);
                 shift = new float[]{(float) (across - c[0] / c[2]), (float) (down - c[1] / c[2])};
                 shifts.put(gl.state, shift);

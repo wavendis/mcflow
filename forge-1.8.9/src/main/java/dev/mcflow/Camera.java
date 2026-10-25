@@ -46,9 +46,16 @@ final class Camera {
         PROJECTION.get(pr);
     }
 
-    /** The eye, in world coordinates. */
+    /**
+     * Where the camera really is, in world coordinates: the eye in first person, behind or in front of the player in
+     * third person (F5). Worked out from the view matrix (rotation R, translation t): the camera sits at -Rᵀt.
+     */
     Vec3 position() {
-        return new Vec3(originX, originY + eyeHeight, originZ);
+        float tx = mv[12], ty = mv[13], tz = mv[14];
+        if (tx == 0 && ty == 0 && tz == 0 && mv[0] == 0) return new Vec3(originX, originY + eyeHeight, originZ); // nothing captured yet
+        return new Vec3(originX - (mv[0] * tx + mv[1] * ty + mv[2] * tz),
+                originY - (mv[4] * tx + mv[5] * ty + mv[6] * tz),
+                originZ - (mv[8] * tx + mv[9] * ty + mv[10] * tz));
     }
 
     /** World-render origin: OpenGL world geometry is drawn relative to this point. */

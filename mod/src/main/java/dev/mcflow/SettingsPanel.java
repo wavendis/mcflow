@@ -285,6 +285,7 @@ public final class SettingsPanel {
             slider("Back to normal after", s.pvpSeconds, 2, 30, 1, Math.round(s.pvpSeconds) + " s without a hit", v -> s.pvpSeconds = v);
             hint("Any new hit restarts the timer; hitting someone else switches to them");
             toggle("Scatter the words around them", s.pvpScatter, v -> s.pvpScatter = v);
+            if (s.pvpScatter) slider("Word size", s.scatterSize, 0.4f, 3, 0.05f, Math.round(s.scatterSize * 100) + "%", v -> s.scatterSize = v);
             // the arch only applies to a line over their head; on screen the slider is already up in Position
             if (!s.pvpScatter && s.placement != Settings.Placement.SCREEN) bendSlider(s);
         }
@@ -326,7 +327,10 @@ public final class SettingsPanel {
             hint("You see it in third person (F5)");
         }
         toggle("Lyrics trail while you walk", s.lyricsTrail, v -> s.lyricsTrail = v);
-        if (s.lyricsTrail) toggle("Let other players see it", s.trailShared, v -> s.trailShared = v);
+        if (s.lyricsTrail) {
+            slider("Trail letter size", s.trailSize, 0.4f, 3, 0.05f, Math.round(s.trailSize * 100) + "%", v -> s.trailSize = v);
+            toggle("Let other players see it", s.trailShared, v -> s.trailShared = v);
+        }
         if ((s.playerGlow && s.glowShared) || (s.lyricsTrail && s.trailShared)) hint("Others need Mc'Flow, and so does the server");
     }
 

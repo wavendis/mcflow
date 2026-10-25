@@ -90,6 +90,8 @@ public final class Settings {
     public float pvpSeconds = 8;
     /** PvP mode: instead of a line over their head, the words float around the target, each cluster in its own random spot. */
     public boolean pvpScatter = false;
+    /** Size of the scattered words (1 = the line's usual size over a target). */
+    public float scatterSize = 1;
     /** A random comic effect (BOOM!, POW!...) pops up around a player each time you hit them. */
     public boolean hitEffects = false;
     /** Hit effects: how long they take to pop in and to fade out (ms), and their size (x the random 0.7..1.5 blocks). */
@@ -102,6 +104,8 @@ public final class Settings {
     public int playerGlowColor = 0x8B5CF6;
     /** The lyrics trail behind you letter by letter while you walk; shared = nearby players see it too. */
     public boolean lyricsTrail = false, trailShared = true;
+    /** Size of the trail's letters (and their spacing); 1 = about a third of a block tall. */
+    public float trailSize = 1;
     /** Blur and dim the lyrics and pill while a menu (inventory, chest, pause...) is open. */
     public boolean menuBlur = true;
     /** Screen mode: where the line's centre sits, as a share of the screen's width / height. */

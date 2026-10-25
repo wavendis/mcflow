@@ -21,8 +21,8 @@ import java.util.UUID;
  * Main thread only.
  */
 final class Trail {
-    /** Path length per letter, letter height, and how far behind the feet they're laid (blocks). */
-    private static final double SPACING = 0.32, LETTER_BLOCKS = 0.32, LIFT = 0.15;
+    /** Path length per letter and letter height at 100% size (blocks), and where on the body they come out (share of height: the torso). */
+    private static final double SPACING = 0.32, LETTER_BLOCKS = 0.32, TORSO = 0.6;
     /** A letter's life: popping in, staying, fading out. */
     private static final long IN_MS = 120, LIFE_MS = 2600, OUT_MS = 700;
     /** Letters waiting longer than this for their player to move are dropped (a line sung while standing still). */
@@ -71,22 +71,26 @@ final class Trail {
             if (s.trailShared) PeerLyrics.send(SingAlong.TRAIL, word);
         }
         long now = System.currentTimeMillis();
+        double spacing = SPACING * s.trailSize; // bigger letters, further apart, so they don't overlap
         for (EntityPlayer p : mc.theWorld.playerEntities) {
             Walker walker = WALKERS.get(p.getUniqueID());
             if (walker == null) continue;
             while (!walker.queue.isEmpty() && now - walker.queue.peekFirst().since() > MAX_WAIT_MS) walker.queue.pollFirst();
-            Vec3 feet = Pvp.feet(p, 1).add(0, LIFT, 0);
+            Vec3 torso = Pvp.feet(p, 1).add(0, p.height * TORSO, 0);
             if (walker.queue.isEmpty() || walker.last == null) {
-                walker.last = feet; // nothing to lay: the next letters start from wherever they are then
+                walker.last = torso; // nothing to lay: the next letters start from wherever they are then
                 continue;
             }
-            Vec3 step = new Vec3(feet.x - walker.last.x, 0, feet.z - walker.last.z);
+            Vec3 step = new Vec3(torso.x - walker.last.x, 0, torso.z - walker.last.z);
             double walked = step.length();
-            if (walked > 6) walker.last = feet; // teleported: don't string letters across the gap
-            while (walked >= SPACING && !walker.queue.isEmpty()) {
-                walker.last = walker.last.add(step.normalize().scale(SPACING));
-                walker.last = new Vec3(walker.last.x, feet.y, walker.last.z);
-                walked -= SPACING;
+            if (walked > 6) { // teleported: don't string letters across the gap
+                walker.last = torso;
+                continue;
+            }
+            while (walked >= spacing && !walker.queue.isEmpty()) {
+                walker.last = walker.last.add(step.normalize().scale(spacing));
+                walker.last = new Vec3(walker.last.x, torso.y, walker.last.z);
+                walked -= spacing;
                 char ch = walker.queue.pollFirst().ch();
                 if (ch != ' ') LETTERS.add(new Letter(ch, walker.last, now)); // a space is just a gap
             }
@@ -131,7 +135,7 @@ final class Trail {
             int alpha = Math.round(pop * fade * visible * 255);
             if (alpha < 4) continue;
             GlyphCache.Entry letter = GlyphCache.get(String.valueOf(l.ch()), fontPx);
-            float scale = at[2] * (float) LETTER_BLOCKS / fontPx * (0.6f + 0.4f * pop); // grows into place
+            float scale = at[2] * (float) LETTER_BLOCKS * s.trailSize / fontPx * (0.6f + 0.4f * pop); // grows into place
             int iw = letter.image().width, ih = letter.image().height;
             g.pose().pushMatrix();
             g.pose().translate(at[0], at[1]);
