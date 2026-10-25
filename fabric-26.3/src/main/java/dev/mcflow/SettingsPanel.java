@@ -54,6 +54,8 @@ public final class SettingsPanel {
     private int lastW, lastH, lastVersion = -1;
     /** The newer release the header's badge was drawn for (null = no badge). */
     private String shownUpdate;
+    /** The music/lyrics status the More tab was drawn with. */
+    private String shownStatus = "";
     /** While dragging the pill: where on it it was grabbed (offset from its centre, px); null otherwise. */
     private double[] pillGrab;
     /** How visible the panel is (it fades away while the mouse is on the pill), and when that was last eased. */
@@ -102,7 +104,8 @@ public final class SettingsPanel {
     public boolean needsRepaint(int w, int h) {
         boolean statusChanged = status != null && System.currentTimeMillis() > statusUntil;
         if (statusChanged) status = null;
-        return dirty || statusChanged || w != lastW || h != lastH || Settings.version() != lastVersion || UpdateCheck.newer() != shownUpdate;
+        return dirty || statusChanged || w != lastW || h != lastH || Settings.version() != lastVersion || UpdateCheck.newer() != shownUpdate
+                || (tab == MORE_TAB && !Lyrics.status().equals(shownStatus));
     }
 
     public BufferedImage paint(int w, int h) {
@@ -165,6 +168,8 @@ public final class SettingsPanel {
 
     /** The tabs, in order; the panel shows one at a time. Remembered between openings. */
     private static final String[] TABS = {"Look", "Motion", "Place", "Beat", "Pill", "More"};
+    /** The tab with the music status, which repaints when that changes. */
+    private static final int MORE_TAB = 5;
     private static int tab;
 
     /** The current tab's controls, top to bottom. */
@@ -357,6 +362,9 @@ public final class SettingsPanel {
 
     private void moreTab(Settings s) {
         section("Music");
+        // what's playing and what became of its lyrics: tells "no music detected" apart from "can't reach LRCLIB"
+        shownStatus = Lyrics.status();
+        for (String part : shownStatus.split(" — ", 2)) hint(fit(part, font(12, Font.PLAIN), panelW - 2 * pad));
         // a bare button row (nothing selected); M / , / . do the same in game
         choice("", new String[]{"‹‹  Previous", NowPlaying.playing() ? "Pause" : "Play", "Next  ››"}, -1,
                 i -> NowPlaying.control(new String[]{"previous", "play", "next"}[i]));

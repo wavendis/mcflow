@@ -5,9 +5,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -44,6 +44,9 @@ public final class Lyrics {
 
     /** Results per track (empty list = no lyrics), so flipping between media sessions doesn't refetch. */
     private static final Map<NowPlaying.Track, List<Line>> CACHE = new ConcurrentHashMap<>();
+    /** Tracks being looked up right now, and why the last lookup failed (null after a success). */
+    private static final Set<NowPlaying.Track> LOADING = ConcurrentHashMap.newKeySet();
+    private static volatile String problem;
 
     private Lyrics() {}
 
@@ -54,15 +57,38 @@ public final class Lyrics {
     }
 
     static void fetch(NowPlaying.Track track) {
-        if (CACHE.containsKey(track)) return;
+        if (CACHE.containsKey(track) || !LOADING.add(track)) return;
         CompletableFuture.supplyAsync(() -> lookup(track)).thenAccept(lrc -> {
             List<Line> lines = lrc == null ? List.of() : parse(lrc, track.durationMs());
             CACHE.put(track, lines);
+            LOADING.remove(track);
+            problem = null;
             McFlow.LOGGER.info("Loaded {} lyric lines for {} - {}", lines.size(), track.artist(), track.title());
         }).exceptionally(e -> {
+            LOADING.remove(track);
+            Throwable cause = e.getCause() != null && e.getCause().getCause() != null ? e.getCause().getCause() : e;
+            problem = "Couldn't reach LRCLIB: " + cause.getClass().getSimpleName() + (cause.getMessage() == null ? "" : " (" + cause.getMessage() + ")");
             McFlow.LOGGER.warn("Lyrics lookup failed for {} - {}", track.artist(), track.title(), e);
             return null; // not cached, so it retries next time the song comes up
         });
+    }
+
+    /**
+     * What's happening with the lyrics for the current track, in words, for the settings screen: so a player (or the
+     * one helping them) can tell "no music detected" from "no lyrics exist" from "can't reach the lyrics site".
+     */
+    public static String status() {
+        NowPlaying.Track t = NowPlaying.track();
+        if (t == null) {
+            if (NowPlaying.problem() != null) return "Song detection failed — " + NowPlaying.problem();
+            return NowPlaying.apps().isEmpty() ? "No music detected: no app is reporting to Windows' media controls"
+                    : "No music detected from the chosen app";
+        }
+        String song = t.title() + (t.artist().isEmpty() ? "" : " · " + t.artist());
+        List<Line> lines = CACHE.get(t);
+        if (lines != null) return song + " — " + (lines.isEmpty() ? "no synced lyrics on LRCLIB" : lines.size() + " lyric lines");
+        if (LOADING.contains(t)) return song + " — looking up lyrics…";
+        return song + " — " + (problem != null ? problem : "lyrics not loaded");
     }
 
     /** Song guesses from media metadata, most specific first: {artist, title}. */
@@ -114,11 +140,8 @@ public final class Lyrics {
     // plain HttpURLConnection and the old Gson parser API: the same code runs on Minecraft 1.8.9 (Java 8, Gson 2.2.4)
     private static JsonArray search(String query) {
         try {
-            HttpURLConnection c = (HttpURLConnection) URI.create("https://lrclib.net/api/search?" + query).toURL().openConnection();
-            c.setRequestProperty("User-Agent", "McFlow (Minecraft mod)");
-            c.setConnectTimeout(10_000);
-            c.setReadTimeout(15_000);
-            if (c.getResponseCode() != 200) return new JsonArray();
+            HttpURLConnection c = Net.open("https://lrclib.net/api/search?" + query);
+            if (c.getResponseCode() != 200) throw new IOException("LRCLIB answered " + c.getResponseCode());
             try (InputStream in = c.getInputStream()) {
                 JsonElement body = new JsonParser().parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
                 return body.isJsonArray() ? body.getAsJsonArray() : new JsonArray();

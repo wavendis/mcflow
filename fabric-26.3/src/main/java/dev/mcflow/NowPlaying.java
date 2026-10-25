@@ -30,6 +30,7 @@ public final class NowPlaying {
     /** Apps with a media session right now (Windows media IDs), and the source choice last written for the helper. */
     private static volatile List<String> apps = List.of();
     private static String writtenSource;
+    private static volatile String problem;
 
     private NowPlaying() {}
 
@@ -47,7 +48,10 @@ public final class NowPlaying {
         String source = Settings.get().musicSource;
         if (source.equals(writtenSource)) return;
         try {
-            Files.writeString(McFlow.configDir().resolve("mcflow/source.txt"), source);
+            Path file = McFlow.configDir().resolve("mcflow/source.txt");
+            // Auto = no file at all (an empty one broke helpers before 1.4.2, which then saw no music at all)
+            if (source.isEmpty()) Files.deleteIfExists(file);
+            else Files.writeString(file, source);
             writtenSource = source;
         } catch (Exception e) {
             McFlow.LOGGER.warn("Couldn't save the music source choice", e);
@@ -68,6 +72,11 @@ public final class NowPlaying {
 
     public static List<String> apps() {
         return apps;
+    }
+
+    /** Why the helper couldn't read Windows' media controls on its last poll, or null when it could. */
+    public static String problem() {
+        return problem;
     }
 
     /** A readable name for a Windows media ID: "Spotify.exe" -> "Spotify", "308046B0AF4A39CB" -> "Firefox"... */
@@ -104,10 +113,15 @@ public final class NowPlaying {
         JsonObject o = new JsonParser().parse(line).getAsJsonObject(); // old Gson API: also runs on 1.8.9's Gson 2.2.4
         if (o.has("apps")) {
             List<String> ids = new ArrayList<>();
-            for (JsonElement e : o.getAsJsonArray("apps")) ids.add(e.getAsString());
+            JsonElement list = o.get("apps");
+            if (list.isJsonArray()) for (JsonElement e : list.getAsJsonArray()) ids.add(e.getAsString());
+            else if (list.isJsonPrimitive()) ids.add(list.getAsString()); // PowerShell writes a one-app list as just the app
             apps = ids;
         }
         writeSource();
+        String error = o.has("error") ? o.get("error").getAsString() : null;
+        if (error != null && !error.equals(problem)) McFlow.LOGGER.warn("Song detection failed: {}", error);
+        problem = error;
         if (!o.has("title")) {
             track = null;
             playing = false;

@@ -49,8 +49,6 @@ neoForge {
     runs {
         client {
             client()
-            // Trust the Windows cert store so LRCLIB works behind HTTPS-scanning antivirus (e.g. Avast)
-            jvmArgument '-Djavax.net.ssl.trustStoreType=Windows-ROOT'
             // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         }

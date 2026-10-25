@@ -17,15 +17,6 @@ repositories {
 	// for more information about repositories.
 }
 
-loom {
-	runs {
-		client {
-			// Trust the Windows cert store so LRCLIB works behind HTTPS-scanning antivirus (e.g. Avast)
-			vmArg '-Djavax.net.ssl.trustStoreType=Windows-ROOT'
-		}
-	}
-}
-
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"

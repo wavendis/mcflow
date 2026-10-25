@@ -5,7 +5,6 @@ import com.google.gson.JsonParser;
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 
@@ -31,11 +30,8 @@ final class UpdateCheck {
         if (current == null) return;
         CompletableFuture.runAsync(() -> {
             try {
-                HttpURLConnection c = (HttpURLConnection) URI.create(LATEST).toURL().openConnection();
-                c.setRequestProperty("User-Agent", "McFlow (Minecraft mod)");
+                HttpURLConnection c = Net.open(LATEST);
                 c.setRequestProperty("Accept", "application/vnd.github+json");
-                c.setConnectTimeout(10_000);
-                c.setReadTimeout(10_000);
                 if (c.getResponseCode() != 200) return;
                 try (InputStream in = c.getInputStream()) {
                     JsonElement tag = new JsonParser().parse(new String(in.readAllBytes(), StandardCharsets.UTF_8))

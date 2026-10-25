@@ -25,10 +25,6 @@ tasks.compileJava {
 loom {
     log4jConfigs.from(file("log4j2.xml"))
     runConfigs {
-        "client" {
-            // Trust the Windows cert store so LRCLIB works behind HTTPS-scanning antivirus (e.g. Avast)
-            vmArg("-Djavax.net.ssl.trustStoreType=Windows-ROOT")
-        }
         remove(getByName("server"))
     }
     forge {
@@ -115,8 +111,6 @@ val runMc by tasks.registering(JavaExec::class) {
         "-Dfabric.dli.config=" + file(".gradle/loom-cache/launch.cfg").absolutePath,
         "-Dfabric.dli.env=client",
         "-Dfabric.dli.main=net.minecraft.launchwrapper.Launch",
-        // trust the Windows cert store so LRCLIB works behind HTTPS-scanning antivirus (e.g. Avast)
-        "-Djavax.net.ssl.trustStoreType=Windows-ROOT",
     )
     doFirst { workingDir.mkdirs() }
 }

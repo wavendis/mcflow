@@ -47,7 +47,8 @@ while ($true) {
         $sessions = @($mgr.GetSessions())
         $apps = @($sessions | ForEach-Object { $_.SourceAppUserModelId })
         $sourceFile = Join-Path $PSScriptRoot 'source.txt'
-        $source = if (Test-Path $sourceFile) { (Get-Content $sourceFile -Raw).Trim() } else { '' }
+        # "$(...)": an empty file reads as $null in Windows PowerShell, and $null.Trim() would fail every poll
+        $source = if (Test-Path $sourceFile) { "$(Get-Content $sourceFile -Raw)".Trim() } else { '' }
         $s = if ($source) { $sessions | Where-Object { $_.SourceAppUserModelId -eq $source } | Select-Object -First 1 } else { $mgr.GetCurrentSession() }
         $line = [pscustomobject]@{ apps = $apps } | ConvertTo-Json -Compress
         if ($s) {
@@ -73,14 +74,17 @@ while ($true) {
                 app     = $s.SourceAppUserModelId
             } | ConvertTo-Json -Compress
         }
-    } catch {}
+    } catch {
+        # tell the game what went wrong (it shows it in the settings and logs it) instead of failing silently
+        $line = [pscustomobject]@{ error = "$($_.Exception.Message)"; apps = @($apps) } | ConvertTo-Json -Compress
+    }
     [Console]::Out.WriteLine($line)
     [Console]::Out.Flush()
     # wait for the next poll, running any media command the game drops in command.txt (play, next, previous)
     $cmdFile = Join-Path $PSScriptRoot 'command.txt'
     for ($i = 0; $i -lt 6; $i++) {
         if (Test-Path $cmdFile) {
-            $cmd = (Get-Content $cmdFile -Raw).Trim()
+            $cmd = "$(Get-Content $cmdFile -Raw)".Trim()
             Remove-Item $cmdFile -ErrorAction SilentlyContinue
             try {
                 if ($s) {
