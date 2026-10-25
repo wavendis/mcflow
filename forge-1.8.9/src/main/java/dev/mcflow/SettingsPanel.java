@@ -54,6 +54,26 @@ public final class SettingsPanel {
     private int lastW, lastH, lastVersion = -1;
     /** The newer release the header's badge was drawn for (null = no badge). */
     private String shownUpdate;
+    /** While dragging the pill: where on it it was grabbed (offset from its centre, px); null otherwise. */
+    private double[] pillGrab;
+    /** How visible the panel is (it fades away while the mouse is on the pill), and when that was last eased. */
+    private float opacity = 1;
+    private long opacityNanos;
+
+    /** Panel opacity this frame, 0..1: almost gone while hovering or dragging the pill, so only the pill shows. */
+    public float opacity() {
+        long now = System.nanoTime();
+        float dt = opacityNanos == 0 ? 16 : Math.min(100, (now - opacityNanos) / 1e6f);
+        opacityNanos = now;
+        float target = pillGrab != null || onPill(mouseX, mouseY) ? 0.06f : 1;
+        opacity += (target - opacity) * (1 - (float) Math.exp(-dt / 90));
+        return opacity;
+    }
+
+    private static boolean onPill(double x, double y) {
+        int[] p = LyricsHud.pillArea;
+        return p != null && x >= p[0] && x < p[0] + p[2] && y >= p[1] && y < p[1] + p[3];
+    }
 
     // layout of the current paint, in panel pixels
     private int panelX, panelY, panelW, panelH, headerH, footerH, pad;
@@ -297,12 +317,28 @@ public final class SettingsPanel {
         section("World");
         choice("Particles on beats", new String[]{"Off", "Notes", "Sparkles", "Glow"}, s.beatParticles.ordinal(), i -> s.beatParticles = Settings.Particles.values()[i]);
         slider("Screen edge glow", s.edgeGlow, 0, 1, 0.05f, s.edgeGlow == 0 ? "off" : Math.round(s.edgeGlow * 100) + "%", v -> s.edgeGlow = v);
+
+        section("You");
+        toggle("Glow to the beat", s.playerGlow, v -> s.playerGlow = v);
+        if (s.playerGlow) {
+            colorPicker("Glow colour", s.playerGlowColor, c -> s.playerGlowColor = c);
+            toggle("Let other players see it", s.glowShared, v -> s.glowShared = v);
+            hint("You see it in third person (F5)");
+        }
+        toggle("Lyrics trail while you walk", s.lyricsTrail, v -> s.lyricsTrail = v);
+        if (s.lyricsTrail) toggle("Let other players see it", s.trailShared, v -> s.trailShared = v);
+        if ((s.playerGlow && s.glowShared) || (s.lyricsTrail && s.trailShared)) hint("Others need Mc'Flow, and so does the server");
     }
 
     private void pillTab(Settings s) {
         section("Now playing pill");
         toggle("Show pill", s.showPill, v -> s.showPill = v);
-        choice("Position", new String[]{"Top", "Bottom"}, s.pillAtBottom ? 1 : 0, i -> s.pillAtBottom = i == 1);
+        boolean moved = s.pillX >= 0;
+        choice("Position", new String[]{"Top", "Bottom"}, moved ? -1 : s.pillAtBottom ? 1 : 0, i -> {
+            s.pillAtBottom = i == 1;
+            s.pillX = s.pillY = -1; // snap back from wherever it was dragged
+        });
+        hint(moved ? "Placed by hand: pick Top or Bottom to snap it back" : "Or drag the pill anywhere while this menu is open");
         toggle("Equalizer", s.equalizer, v -> s.equalizer = v);
 
         section("Album art");
@@ -625,6 +661,11 @@ public final class SettingsPanel {
 
     /** Returns true when the click landed on the panel (so the game shouldn't get it). */
     public boolean press(double x, double y) {
+        int[] p = LyricsHud.pillArea;
+        if (onPill(x, y)) { // grab the pill (it wins over the panel: the panel has faded away by now)
+            pillGrab = new double[]{x - (p[0] + p[2] / 2.0), y - (p[1] + p[3] / 2.0)};
+            return true;
+        }
         if (!inside(x, y)) return false;
         Hit h = hitAt(x, y);
         if (h != null) {
@@ -639,6 +680,15 @@ public final class SettingsPanel {
     }
 
     public boolean drag(double x, double y) {
+        mouseX = x;
+        mouseY = y;
+        if (pillGrab != null && lastW > 0 && lastH > 0) {
+            // live, without Settings.changed(): that would redraw the pill and re-lay-out the lyrics every frame
+            Settings s = Settings.get();
+            s.pillX = (float) Math.clamp((x - pillGrab[0]) / lastW, 0, 1);
+            s.pillY = (float) Math.clamp((y - pillGrab[1]) / lastH, 0, 1);
+            return true;
+        }
         if (dragging == null) return false;
         dragging.drag().to(x - panelX, y - panelY);
         dirty = true;
@@ -647,6 +697,11 @@ public final class SettingsPanel {
 
     public void release() {
         dragging = null;
+        if (pillGrab != null) { // dropped: it stays there
+            pillGrab = null;
+            Settings.save();
+            dirty = true; // the Pill tab's position hint changes
+        }
     }
 
     public boolean scroll(double x, double y, double amount) {

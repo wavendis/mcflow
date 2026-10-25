@@ -97,6 +97,11 @@ public final class Settings {
     public float hitSize = 1;
     /** Hit effects: at most this many on screen at once; a new hit replaces the oldest. */
     public int hitMax = 8;
+    /** You glow in this colour, flaring on every beat (seen in third person); shared = nearby players see it too. */
+    public boolean playerGlow = false, glowShared = true;
+    public int playerGlowColor = 0x8B5CF6;
+    /** The lyrics trail behind you letter by letter while you walk; shared = nearby players see it too. */
+    public boolean lyricsTrail = false, trailShared = true;
     /** Blur and dim the lyrics and pill while a menu (inventory, chest, pause...) is open. */
     public boolean menuBlur = true;
     /** Screen mode: where the line's centre sits, as a share of the screen's width / height. */
@@ -125,6 +130,8 @@ public final class Settings {
     // pill
     public boolean showPill = true;
     public boolean pillAtBottom = false;
+    /** Where the pill was dragged to (its centre, as a share of the screen's width/height); -1 = top or bottom as above. */
+    public float pillX = -1, pillY = -1;
     public String uiFont = AUTO_FONT;
     public int accent = 0x8B5CF6;
     public float pillOpacity = 0.78f;

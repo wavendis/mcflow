@@ -38,7 +38,7 @@ public class SettingsScreen extends Screen {
         }
         g.pose().pushMatrix();
         g.pose().scale(1f / scale, 1f / scale); // draw in physical pixels, like the HUD
-        image.draw(g, panel.x(), panel.y(), 0xFFFFFFFF);
+        image.draw(g, panel.x(), panel.y(), Math.round(panel.opacity() * 255) << 24 | 0xFFFFFF); // fades while on the pill
         g.pose().popMatrix();
     }
 

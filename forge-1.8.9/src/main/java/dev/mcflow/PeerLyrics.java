@@ -35,13 +35,28 @@ public final class PeerLyrics {
     private PeerLyrics() {}
 
     /** Network thread or main thread: a nearby player's line changed. */
-    static void receive(UUID player, String text) {
-        Peer old = text.isBlank() ? PEERS.remove(player) : PEERS.put(player, new Peer(text));
-        if (old != null && old.image != null) Minecraft.getMinecraft().addScheduledTask(old.image::close); // textures belong to the render thread
+    static void receive(UUID player, int kind, String text) {
+        switch (kind) {
+            case SingAlong.TRAIL -> Trail.receive(player, text);
+            case SingAlong.BEAT -> PlayerGlow.receive(player, text);
+            default -> {
+                Peer old = text.isBlank() ? PEERS.remove(player) : PEERS.put(player, new Peer(text));
+                if (old != null && old.image != null) Minecraft.getMinecraft().addScheduledTask(old.image::close); // textures belong to the render thread
+            }
+        }
+    }
+
+    /** Shares something with nearby players, if the server has Mc'Flow (it said hello); false if it couldn't be sent. */
+    static boolean send(int kind, String text) {
+        if (!SingAlong.serverHasMod) return false;
+        SingAlong.NET.sendToServer(new SingAlong.ShareLine(kind, text));
+        return true;
     }
 
     /** Every client tick: tells the server when the line you're on changes. */
     static void tick(Minecraft mc) {
+        PlayerGlow.tick();
+        Trail.tick(mc);
         if (mc.getNetHandler() == null) { // left the world
             lastSent = "";
             SingAlong.serverHasMod = false;
@@ -52,10 +67,7 @@ public final class PeerLyrics {
             return;
         }
         String text = Settings.get().shareLyrics ? currentLine() : "";
-        if (!text.equals(lastSent) && SingAlong.serverHasMod) {
-            SingAlong.NET.sendToServer(new SingAlong.ShareLine(text));
-            lastSent = text;
-        }
+        if (!text.equals(lastSent) && send(SingAlong.LINE, text)) lastSent = text;
     }
 
     /** The lyric line being sung right now, or "" if nothing is playing / between lines. */

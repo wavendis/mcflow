@@ -27,6 +27,9 @@ public final class SingAlong {
     private static final double RANGE = 64;
     private static final int MAX_LENGTH = 200;
 
+    /** What a message carries: the lyric line you're on, a word for your trail, or a beat of your glow ("rrggbb strength"). */
+    public static final int LINE = 0, TRAIL = 1, BEAT = 2;
+
     static final SimpleNetworkWrapper NET = NetworkRegistry.INSTANCE.newSimpleChannel("mcflow");
     /** Client: whether the server we're on has Mc'Flow (it said hello). */
     static volatile boolean serverHasMod;
@@ -48,21 +51,25 @@ public final class SingAlong {
 
     /** Client to server: "this is the line I'm on now" (empty = nothing playing). */
     public static final class ShareLine implements IMessage {
+        int kind;
         String text = "";
 
         public ShareLine() {}
 
-        ShareLine(String text) {
+        ShareLine(int kind, String text) {
+            this.kind = kind;
             this.text = text;
         }
 
         @Override
         public void fromBytes(ByteBuf buf) {
+            kind = buf.readByte();
             text = ByteBufUtils.readUTF8String(buf);
         }
 
         @Override
         public void toBytes(ByteBuf buf) {
+            buf.writeByte(kind);
             ByteBufUtils.writeUTF8String(buf, text.length() > MAX_LENGTH ? text.substring(0, MAX_LENGTH) : text);
         }
 
@@ -73,7 +80,7 @@ public final class SingAlong {
                 EntityPlayerMP from = ctx.getServerHandler().playerEntity;
                 ((WorldServer) from.worldObj).addScheduledTask(() -> {
                     String text = line.text.length() > MAX_LENGTH ? line.text.substring(0, MAX_LENGTH) : line.text;
-                    PeerLine out = new PeerLine(from.getUniqueID(), text);
+                    PeerLine out = new PeerLine(from.getUniqueID(), line.kind, text);
                     for (EntityPlayer other : from.worldObj.playerEntities) {
                         if (other != from && other instanceof EntityPlayerMP mp && other.getDistanceSqToEntity(from) <= RANGE * RANGE) {
                             NET.sendTo(out, mp);
@@ -88,18 +95,21 @@ public final class SingAlong {
     /** Server to client: the line a nearby player is on (empty = they stopped). */
     public static final class PeerLine implements IMessage {
         UUID player = new UUID(0, 0);
+        int kind;
         String text = "";
 
         public PeerLine() {}
 
-        PeerLine(UUID player, String text) {
+        PeerLine(UUID player, int kind, String text) {
             this.player = player;
+            this.kind = kind;
             this.text = text;
         }
 
         @Override
         public void fromBytes(ByteBuf buf) {
             player = new UUID(buf.readLong(), buf.readLong());
+            kind = buf.readByte();
             text = ByteBufUtils.readUTF8String(buf);
         }
 
@@ -107,13 +117,14 @@ public final class SingAlong {
         public void toBytes(ByteBuf buf) {
             buf.writeLong(player.getMostSignificantBits());
             buf.writeLong(player.getLeastSignificantBits());
+            buf.writeByte(kind);
             ByteBufUtils.writeUTF8String(buf, text);
         }
 
         public static final class Handler implements IMessageHandler<PeerLine, IMessage> {
             @Override
             public IMessage onMessage(PeerLine line, net.minecraftforge.fml.common.network.simpleimpl.MessageContext ctx) {
-                Minecraft.getMinecraft().addScheduledTask(() -> PeerLyrics.receive(line.player, line.text));
+                Minecraft.getMinecraft().addScheduledTask(() -> PeerLyrics.receive(line.player, line.kind, line.text));
                 return null;
             }
         }

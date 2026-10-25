@@ -21,13 +21,17 @@ public final class SingAlong {
     private static final double RANGE = 64;
     private static final int MAX_LENGTH = 200;
 
+    /** What a message carries: the lyric line you're on, a word for your trail, or a beat of your glow ("rrggbb strength"). */
+    public static final int LINE = 0, TRAIL = 1, BEAT = 2;
+
     private SingAlong() {}
 
-    /** Client to server: "this is the line I'm on now" (empty = nothing playing). */
-    public record ShareLine(String text) implements CustomPacketPayload {
-        public static final Type<ShareLine> TYPE = new Type<>(Identifier.fromNamespaceAndPath("mcflow", "share_line"));
-        public static final StreamCodec<ByteBuf, ShareLine> CODEC =
-                StreamCodec.composite(ByteBufCodecs.stringUtf8(MAX_LENGTH), ShareLine::text, ShareLine::new);
+    /** Client to server: {@link #LINE} "this is the line I'm on now" (empty = nothing playing), a {@link #TRAIL} word or a {@link #BEAT}. */
+    public record ShareLine(int kind, String text) implements CustomPacketPayload {
+        // "_v2" since the kind was added: servers with an older Mc'Flow just look like ones without it
+        public static final Type<ShareLine> TYPE = new Type<>(Identifier.fromNamespaceAndPath("mcflow", "share_v2"));
+        public static final StreamCodec<ByteBuf, ShareLine> CODEC = StreamCodec.composite(
+                ByteBufCodecs.VAR_INT, ShareLine::kind, ByteBufCodecs.stringUtf8(MAX_LENGTH), ShareLine::text, ShareLine::new);
 
         @Override
         public Type<ShareLine> type() {
@@ -35,11 +39,11 @@ public final class SingAlong {
         }
     }
 
-    /** Server to client: the line a nearby player is on (empty = they stopped). */
-    public record PeerLine(UUID player, String text) implements CustomPacketPayload {
-        public static final Type<PeerLine> TYPE = new Type<>(Identifier.fromNamespaceAndPath("mcflow", "peer_line"));
-        public static final StreamCodec<ByteBuf, PeerLine> CODEC = StreamCodec.composite(
-                UUIDUtil.STREAM_CODEC, PeerLine::player, ByteBufCodecs.stringUtf8(MAX_LENGTH), PeerLine::text, PeerLine::new);
+    /** Server to client: what a nearby player shared (see {@link ShareLine}; an empty line = they stopped). */
+    public record PeerLine(UUID player, int kind, String text) implements CustomPacketPayload {
+        public static final Type<PeerLine> TYPE = new Type<>(Identifier.fromNamespaceAndPath("mcflow", "peer_v2"));
+        public static final StreamCodec<ByteBuf, PeerLine> CODEC = StreamCodec.composite(UUIDUtil.STREAM_CODEC, PeerLine::player,
+                ByteBufCodecs.VAR_INT, PeerLine::kind, ByteBufCodecs.stringUtf8(MAX_LENGTH), PeerLine::text, PeerLine::new);
 
         @Override
         public Type<PeerLine> type() {
@@ -47,10 +51,10 @@ public final class SingAlong {
         }
     }
 
-    /** Server side: passes a player's line on to everyone near them in the same world (not back to them). */
+    /** Server side: passes what a player shared on to everyone near them in the same world (not back to them). */
     public static void relay(ServerPlayer from, ShareLine line, BiConsumer<ServerPlayer, PeerLine> send) {
         String text = line.text().length() > MAX_LENGTH ? line.text().substring(0, MAX_LENGTH) : line.text();
-        PeerLine out = new PeerLine(from.getUUID(), text);
+        PeerLine out = new PeerLine(from.getUUID(), line.kind(), text);
         for (ServerPlayer other : from.level().players()) {
             if (other != from && other.distanceToSqr(from) <= RANGE * RANGE) send.accept(other, out);
         }

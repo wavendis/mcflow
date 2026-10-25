@@ -41,14 +41,29 @@ public final class PeerLyrics {
 
     private PeerLyrics() {}
 
-    /** Network thread or main thread: a nearby player's line changed. */
+    /** Network thread or main thread: something a nearby player shared (their line, a trail word, a glow beat). */
     static void receive(SingAlong.PeerLine line) {
-        Peer old = line.text().isBlank() ? PEERS.remove(line.player()) : PEERS.put(line.player(), new Peer(line.text()));
-        if (old != null && old.image != null) Minecraft.getInstance().execute(old.image::close); // textures belong to the render thread
+        switch (line.kind()) {
+            case SingAlong.TRAIL -> Minecraft.getInstance().execute(() -> Trail.receive(line.player(), line.text()));
+            case SingAlong.BEAT -> PlayerGlow.receive(line.player(), line.text());
+            default -> {
+                Peer old = line.text().isBlank() ? PEERS.remove(line.player()) : PEERS.put(line.player(), new Peer(line.text()));
+                if (old != null && old.image != null) Minecraft.getInstance().execute(old.image::close); // textures belong to the render thread
+            }
+        }
     }
 
-    /** Every client tick: tells the server when the line you're on changes. */
+    /** Shares something with nearby players, if the server has Mc'Flow; false if it couldn't be sent. */
+    static boolean send(int kind, String text) {
+        if (sender == null || canSend == null || !canSend.test(SingAlong.ShareLine.TYPE)) return false;
+        sender.accept(new SingAlong.ShareLine(kind, text));
+        return true;
+    }
+
+    /** Every client tick: tells the server when the line you're on changes; also runs the glow and the trail. */
     static void tick(Minecraft mc) {
+        PlayerGlow.tick();
+        Trail.tick(mc);
         if (mc.getConnection() == null) { // left the world
             lastSent = "";
             PEERS.values().forEach(p -> {
@@ -58,10 +73,7 @@ public final class PeerLyrics {
             return;
         }
         String text = Settings.get().shareLyrics ? currentLine() : "";
-        if (!text.equals(lastSent) && sender != null && canSend != null && canSend.test(SingAlong.ShareLine.TYPE)) {
-            sender.accept(new SingAlong.ShareLine(text));
-            lastSent = text;
-        }
+        if (!text.equals(lastSent) && send(SingAlong.LINE, text)) lastSent = text;
     }
 
     /** The lyric line being sung right now, or "" if nothing is playing / between lines. */

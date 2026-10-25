@@ -43,7 +43,7 @@ public class SettingsScreen extends GuiScreen {
         GlStateManager.disableAlpha();
         GlStateManager.pushMatrix();
         GlStateManager.scale(1f / scale, 1f / scale, 1); // draw in physical pixels, like the HUD
-        image.draw(g, panel.x(), panel.y(), 0xFFFFFFFF);
+        image.draw(g, panel.x(), panel.y(), Math.round(panel.opacity() * 255) << 24 | 0xFFFFFF); // fades while on the pill
         GlStateManager.popMatrix();
         GlStateManager.enableAlpha();
     }

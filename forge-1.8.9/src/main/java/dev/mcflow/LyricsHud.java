@@ -159,6 +159,8 @@ public final class LyricsHud {
     private static final NowPlaying.Track DEMO_TRACK = new NowPlaying.Track("Preview", "Mc'Flow", 16_000);
     /** Set by the settings screen while it's open. */
     static volatile boolean preview;
+    /** Where the pill was drawn last frame, {x, y, width, height} in physical pixels, or null: for dragging it around. */
+    static volatile int[] pillArea;
 
     private GpuImage pill;
     private String pillKey = "";
@@ -188,6 +190,7 @@ public final class LyricsHud {
             pos = System.currentTimeMillis() % 16_000;
             playing = true;
         }
+        pillArea = null; // set again below if the pill is drawn this frame
         drawPeers(g);
         drawHits(g, deltaTracker.getGameTimeDeltaPartialTick(true));
         GlyphCache.uploadSome(4); // a few per frame keeps the upload work invisible
@@ -273,11 +276,13 @@ public final class LyricsHud {
         g.pose().popMatrix();
     }
 
-    /** Comic hit effects over the players you hit, in physical pixels like the rest. */
+    /** Players' beat glow, lyric trails and comic hit effects, in physical pixels like the rest. */
     private static void drawHits(GuiGraphicsExtractor g, float partialTick) {
         Window window = Window.get();
         g.pose().pushMatrix();
         g.pose().scale(1f / window.getGuiScale(), 1f / window.getGuiScale());
+        PlayerGlow.draw(g, partialTick); // behind the rest
+        Trail.draw(g, partialTick, window.getHeight() * BIG_TEXT * Settings.get().lyricSize * RES);
         HitFx.draw(g, partialTick);
         g.pose().popMatrix();
     }
@@ -345,6 +350,11 @@ public final class LyricsHud {
         int x = (w - pill.width) / 2;
         // at the bottom it sits above the hotbar (22 GUI pixels tall) instead of on it
         int y = s.pillAtBottom ? h - height - Math.round(32 * guiScale) : Math.round(h * 0.014f);
+        if (s.pillX >= 0) { // dragged somewhere in the settings: centred there, kept fully on screen
+            x = Math.clamp(Math.round(s.pillX * w - pill.width / 2f), 0, Math.max(0, w - pill.width));
+            y = Math.clamp(Math.round(s.pillY * h - pill.height / 2f), 0, Math.max(0, h - pill.height));
+        }
+        pillArea = new int[]{x, y, pill.width, pill.height};
         pill.drawSoft(g, x, y, Math.round(255 * dim) << 24 | 0xFFFFFF, blurPx, menuFade);
         if (s.equalizer) drawEqualizer(g, x + pill.width - Math.round(height * TextArt.PILL_RIGHT_PAD) - eqWidth, y + height / 2, height, eqWidth, playing, dt);
     }
