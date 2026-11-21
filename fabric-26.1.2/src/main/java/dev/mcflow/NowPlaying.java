@@ -104,9 +104,17 @@ public final class NowPlaying {
     }
 
     public static void start() {
-        if (!Helper.start("nowplaying.ps1", NowPlaying::update)) {
+        if (!Helper.start("nowplaying.ps1", NowPlaying::update, NowPlaying::helperFailed)) {
             McFlow.LOGGER.warn("Now-playing detection only works on Windows");
         }
+    }
+
+    /** The helper couldn't start or closed without a word: shown in the settings like any other detection problem. */
+    private static void helperFailed(String why) {
+        if (!why.equals(problem)) McFlow.LOGGER.warn("Song detection failed: {}", why);
+        problem = why;
+        track = null;
+        playing = false;
     }
 
     private static void update(String line) {

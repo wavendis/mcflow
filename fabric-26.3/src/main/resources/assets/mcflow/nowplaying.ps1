@@ -5,19 +5,31 @@
 # followed; otherwise it's whatever Windows considers the current session.
 # Writing play, next or previous to command.txt controls the followed app.
 param([int]$ParentPid)
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
-} | Select-Object -First 1
-function Await($op, [Type]$type) {
-    $task = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
-    $task.Wait(-1) | Out-Null
-    $task.Result
+# UTF-8 out: Windows PowerShell otherwise writes in the console's old code page, mangling titles like "Beyonce" with an accent
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+    } | Select-Object -First 1
+    function Await($op, [Type]$type) {
+        $task = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
+        $task.Wait(-1) | Out-Null
+        $task.Result
+    }
+    $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
+    $mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
+    $null = [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
+    $null = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType = WindowsRuntime]
+} catch {
+    # Windows' media controls can't be used here (Windows N without the Media Feature Pack, a policy that locks
+    # PowerShell down...): say so for the settings screen, then wait a while before the game starts us again
+    $line = [pscustomobject]@{ error = "Windows media controls unavailable: $($_.Exception.Message)" } | ConvertTo-Json -Compress
+    [Console]::Out.WriteLine($line)
+    [Console]::Out.Flush()
+    Start-Sleep -Seconds 30
+    exit 1
 }
-$null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
-$mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
-$null = [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
-$null = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType = WindowsRuntime]
 $artFor = $null; $art = $null; $artCount = 0
 
 # saves the cover to a new file each time (so the game never reads a half-written one) and removes the old one
