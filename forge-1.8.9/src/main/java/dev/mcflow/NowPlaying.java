@@ -122,7 +122,7 @@ public final class NowPlaying {
         String error = o.has("error") ? o.get("error").getAsString() : null;
         if (error != null && !error.equals(problem)) McFlow.LOGGER.warn("Song detection failed: {}", error);
         problem = error;
-        if (!o.has("title")) {
+        if (!o.has("title") || o.get("title").getAsString().isBlank()) { // nothing playing: no lookup for a blank song
             track = null;
             playing = false;
             return;

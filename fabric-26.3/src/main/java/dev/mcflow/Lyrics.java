@@ -10,6 +10,9 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -18,6 +21,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,9 +50,20 @@ public final class Lyrics {
 
     /** Results per track (empty list = no lyrics), so flipping between media sessions doesn't refetch. */
     private static final Map<NowPlaying.Track, List<Line>> CACHE = new ConcurrentHashMap<>();
-    /** Tracks being looked up right now, and why the last lookup failed (null after a success). */
+    /** Tracks being looked up (or waiting to try again), and why the last lookup failed (null after a success). */
     private static final Set<NowPlaying.Track> LOADING = ConcurrentHashMap.newKeySet();
     private static volatile String problem;
+    /** Waits between tries while LRCLIB can't be reached: the last one repeats for as long as the song plays. */
+    private static final long[] RETRY_SECONDS = {15, 30, 60};
+    private static final ScheduledExecutorService RETRY = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "McFlow lyrics retry");
+        t.setDaemon(true);
+        return t;
+    });
+    /** A saved "LRCLIB has no lyrics for this" is looked up again after a week, in case they've been added since. */
+    private static final long NO_LYRICS_KEEP_MS = 7L * 24 * 60 * 60 * 1000;
+    /** Start of the error for an HTTP failure; the status line turns 5xx ones into "LRCLIB is down right now". */
+    private static final String ANSWERED = "LRCLIB answered ";
 
     private Lyrics() {}
 
@@ -58,19 +75,75 @@ public final class Lyrics {
 
     static void fetch(NowPlaying.Track track) {
         if (CACHE.containsKey(track) || !LOADING.add(track)) return;
-        CompletableFuture.supplyAsync(() -> lookup(track)).thenAccept(lrc -> {
-            List<Line> lines = lrc == null ? List.of() : parse(lrc, track.durationMs());
+        CompletableFuture.runAsync(() -> load(track, 0));
+    }
+
+    /**
+     * Background: the song's lyrics from the disk cache if they're there, otherwise from LRCLIB (and saved). When
+     * LRCLIB can't be reached it tries again after 15 s, 30 s, then every minute, as long as the song is still playing.
+     */
+    private static void load(NowPlaying.Track track, int attempt) {
+        try {
+            String lrc = readCached(track);
+            boolean cached = lrc != null;
+            if (!cached) {
+                lrc = lookup(track);
+                writeCached(track, lrc);
+            }
+            List<Line> lines = lrc == null || lrc.isEmpty() ? List.of() : parse(lrc, track.durationMs());
             CACHE.put(track, lines);
             LOADING.remove(track);
             problem = null;
-            McFlow.LOGGER.info("Loaded {} lyric lines for {} - {}", lines.size(), track.artist(), track.title());
-        }).exceptionally(e -> {
-            LOADING.remove(track);
-            Throwable cause = e.getCause() != null && e.getCause().getCause() != null ? e.getCause().getCause() : e;
-            problem = "Couldn't reach LRCLIB: " + cause.getClass().getSimpleName() + (cause.getMessage() == null ? "" : " (" + cause.getMessage() + ")");
-            McFlow.LOGGER.warn("Lyrics lookup failed for {} - {}", track.artist(), track.title(), e);
-            return null; // not cached, so it retries next time the song comes up
-        });
+            McFlow.LOGGER.info("Loaded {} lyric lines for {} - {}{}", lines.size(), track.artist(), track.title(), cached ? " (saved copy)" : "");
+        } catch (Exception e) {
+            problem = describe(e);
+            if (attempt == 0) McFlow.LOGGER.warn("Lyrics lookup failed for {} - {}", track.artist(), track.title(), e);
+            if (track.equals(NowPlaying.track())) {
+                RETRY.schedule(() -> load(track, attempt + 1), RETRY_SECONDS[Math.min(attempt, RETRY_SECONDS.length - 1)], TimeUnit.SECONDS);
+            } else {
+                LOADING.remove(track); // not playing any more: it's looked up again next time it comes on
+            }
+        }
+    }
+
+    /** A failed lookup in words for the status line: "LRCLIB is down right now (error 502)" for their outages. */
+    static String describe(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null) cause = cause.getCause();
+        String message = String.valueOf(cause.getMessage());
+        if (message.startsWith(ANSWERED + "5")) return "LRCLIB is down right now (error " + message.substring(ANSWERED.length()) + ")";
+        return "Couldn't reach LRCLIB: " + cause.getClass().getSimpleName() + (cause.getMessage() == null ? "" : " (" + message + ")");
+    }
+
+    /** The song's saved lyrics ("" = LRCLIB had none), or null if not saved (or a "none" that's over a week old). */
+    private static String readCached(NowPlaying.Track track) {
+        try {
+            Path file = cacheFile(track);
+            if (!Files.exists(file)) return null;
+            if (Files.size(file) == 0 && System.currentTimeMillis() - Files.getLastModifiedTime(file).toMillis() > NO_LYRICS_KEEP_MS) return null;
+            return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void writeCached(NowPlaying.Track track, String lrc) {
+        try {
+            Path file = cacheFile(track);
+            Files.createDirectories(file.getParent());
+            Files.write(file, (lrc == null ? "" : lrc).getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            McFlow.LOGGER.warn("Couldn't save lyrics for {} - {}", track.artist(), track.title(), e);
+        }
+    }
+
+    /** config/mcflow/lyrics/&lt;hash of artist and title&gt;.lrc */
+    private static Path cacheFile(NowPlaying.Track track) throws Exception {
+        String key = (track.artist().trim() + "\n" + track.title().trim()).toLowerCase(Locale.ROOT);
+        byte[] hash = MessageDigest.getInstance("SHA-1").digest(key.getBytes(StandardCharsets.UTF_8));
+        StringBuilder name = new StringBuilder();
+        for (byte b : hash) name.append(String.format("%02x", b));
+        return McFlow.configDir().resolve("mcflow").resolve("lyrics").resolve(name + ".lrc");
     }
 
     /**
@@ -87,7 +160,7 @@ public final class Lyrics {
         String song = t.title() + (t.artist().isEmpty() ? "" : " · " + t.artist());
         List<Line> lines = CACHE.get(t);
         if (lines != null) return song + " — " + (lines.isEmpty() ? "no synced lyrics on LRCLIB" : lines.size() + " lyric lines");
-        if (LOADING.contains(t)) return song + " — looking up lyrics…";
+        if (LOADING.contains(t)) return song + " — " + (problem != null ? problem + ", trying again…" : "looking up lyrics…");
         return song + " — " + (problem != null ? problem : "lyrics not loaded");
     }
 
@@ -141,7 +214,7 @@ public final class Lyrics {
     private static JsonArray search(String query) {
         try {
             HttpURLConnection c = Net.open("https://lrclib.net/api/search?" + query);
-            if (c.getResponseCode() != 200) throw new IOException("LRCLIB answered " + c.getResponseCode());
+            if (c.getResponseCode() != 200) throw new IOException(ANSWERED + c.getResponseCode());
             try (InputStream in = c.getInputStream()) {
                 JsonElement body = new JsonParser().parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
                 return body.isJsonArray() ? body.getAsJsonArray() : new JsonArray();
@@ -443,6 +516,10 @@ public final class Lyrics {
                 .equals(List.of("Yellow@1000", "diamonds@1800", "in@2500", "the light@2700")) : timed.getFirst().words();
         // syllables: "strength" (1) gets less time than "beautiful" (3) despite having more letters
         assert weight("strength") < weight("beautiful");
+        // failures in words: LRCLIB outages vs. anything else (the wrapping CompletableFuture/RuntimeException is unwrapped)
+        assert describe(new RuntimeException(new IOException(ANSWERED + 502))).equals("LRCLIB is down right now (error 502)") : describe(new RuntimeException(new IOException(ANSWERED + 502)));
+        assert describe(new IOException(ANSWERED + 429)).startsWith("Couldn't reach LRCLIB: IOException") : "not an outage";
+        assert describe(new java.net.UnknownHostException("lrclib.net")).equals("Couldn't reach LRCLIB: UnknownHostException (lrclib.net)");
         System.out.println("ok");
     }
 }

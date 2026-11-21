@@ -8,12 +8,14 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Consumer;
 
 /** Everything the settings panel can change, saved as config/mcflow.json. Shared by the NeoForge and Fabric builds. */
 public final class Settings {
     /** WORLD: on a sphere around the player. PINNED: on a fixed flat plane in the world. SCREEN: fixed on screen. */
     public enum Placement { WORLD, PINNED, SCREEN }
-    public enum Layout { STAGGERED, CENTERED, SINGLE }
+    /** DRIFT: words of mixed sizes on loose, tilted rows. POP: one word at a time, each at its own spot. */
+    public enum Layout { STAGGERED, CENTERED, SINGLE, DRIFT, POP }
     public enum Pulse { OFF, NOUNS, ALL }
     public enum Reveal { WORDS, LINE }
     public enum FadeOut { TOGETHER, WORDS }
@@ -34,6 +36,9 @@ public final class Settings {
 
     /** Which app's music to follow (its Windows media ID, e.g. "Spotify.exe"); empty = whatever Windows says is playing. */
     public String musicSource = "";
+
+    /** The ready-made look last picked (ticked in the panel); it stays ticked after tweaks, as their starting point. */
+    public String look = "Handwritten";
 
     // lyrics
     public String lyricFont = BUILT_IN_FONT;
@@ -166,64 +171,223 @@ public final class Settings {
 
     // ---- presets and share codes (looks only: never the timing offset or which app the music comes from) ----
 
-    /** One-click looks, in the order the panel shows them. */
-    public static final List<String> PRESETS = List.of("Neon", "Handwritten", "Retro arcade", "Minimal", "Anime subtitles");
+    /** A one-click look: its name and a short blurb for its card, two colours for the card's bar, and what it sets. */
+    public record Look(String name, String blurb, int from, int to, Consumer<Settings> apply) {}
 
-    public static void applyPreset(String name) {
-        Settings s = current;
-        // start each preset from the default look, keeping the user's own non-look settings
+    /** The ready-made looks, in the order the panel shows them. */
+    public static final List<Look> LOOKS = List.of(
+            new Look("Handwritten", "Soft script, the classic", 0xFFFFFF, 0xC4B5FD, s -> {}),
+            new Look("Dreamy", "Words drifting across the sky", 0xE0E7FF, 0x818CF8, s -> {
+                s.layout = Layout.DRIFT;
+                s.lyricColor = 0xF5F3FF;
+                s.glow = 0.35f;
+                s.glowColor = 0xA5B4FC;
+                s.shadow = 0.3f;
+                s.fadeMs = 450;
+                s.fadeOutMs = 600;
+                s.idle = Idle.FLOAT;
+                s.pulse = Pulse.OFF;
+                s.worldRaise = 18;
+            }),
+            new Look("Kinetic", "One word at a time, popping up", 0xFFFFFF, 0x6B7280, s -> {
+                s.layout = Layout.POP;
+                s.lyricFont = font("Bahnschrift", "Segoe UI");
+                s.uppercase = true;
+                s.letterSpacing = 0.14f;
+                s.lyricSize = 0.5f;
+                s.shadow = 0.4f;
+                s.appear = Appear.POP;
+                s.fadeMs = 120;
+                s.fadeOutMs = 700;
+                s.floatUp = false;
+                s.pulse = Pulse.OFF;
+                s.beatParticles = Particles.OFF;
+                s.worldRaise = 4;
+            }),
+            new Look("Neon", "Pink glow that pulses", 0xF9A8D4, 0xDB2777, s -> {
+                s.lyricFont = AUTO_FONT;
+                s.glow = 1;
+                s.glowColor = 0xF472B6;
+                s.shadow = 0;
+                s.pulse = Pulse.ALL;
+                s.edgeGlow = 0.8f;
+                s.beatParticles = Particles.GLOW;
+                s.idle = Idle.WAVE;
+            }),
+            new Look("Retro arcade", "Pixel-era yellow, typed in", 0xFDE68A, 0xF59E0B, s -> {
+                s.lyricFont = font("Consolas", "Courier New");
+                s.uppercase = true;
+                s.lyricColor = 0xFDE68A;
+                s.outline = 0.08f;
+                s.letterSpacing = 0.06f;
+                s.appear = Appear.TYPEWRITER;
+                s.exit = Exit.SCATTER;
+                s.beatParticles = Particles.NOTES;
+                s.lyricSize = 0.85f;
+            }),
+            new Look("Minimal", "Small, calm, centred", 0xF3F4F6, 0x9CA3AF, s -> {
+                s.lyricFont = AUTO_FONT;
+                s.shadow = 0.3f;
+                s.lyricSize = 0.8f;
+                s.layout = Layout.CENTERED;
+                s.pulse = Pulse.OFF;
+                s.dropEffect = false;
+                s.edgeGlow = 0;
+                s.beatParticles = Particles.OFF;
+                s.floatUp = false;
+            }),
+            new Look("Anime subtitles", "Outlined line at the bottom", 0xFFFFFF, 0x6B7280, s -> {
+                s.lyricFont = AUTO_FONT;
+                s.placement = Placement.SCREEN;
+                s.screenY = 0.86f;
+                s.layout = Layout.SINGLE;
+                s.lyricSize = 0.6f;
+                s.outline = 0.12f;
+                s.shadow = 0;
+                s.reveal = Reveal.LINE;
+                s.pulse = Pulse.OFF;
+                s.edgeGlow = 0;
+                s.beatParticles = Particles.OFF;
+                s.floatUp = false;
+            }),
+            new Look("Sunset", "Warm peach with a rose glow", 0xFDBA74, 0xFB7185, s -> {
+                s.lyricColor = 0xFFE4C4;
+                s.glow = 0.8f;
+                s.glowColor = 0xFB7185;
+                s.pulseColor = 0xFDBA74;
+                s.accent = 0xFB923C;
+                s.accentFromArt = false;
+                s.idle = Idle.FLOAT;
+            }),
+            new Look("Ocean", "Cool blues that roll like waves", 0x7DD3FC, 0x2563EB, s -> {
+                s.lyricColor = 0xE0F2FE;
+                s.glow = 0.7f;
+                s.glowColor = 0x38BDF8;
+                s.pulseColor = 0x7DD3FC;
+                s.idle = Idle.WAVE;
+                s.exit = Exit.FALL;
+                s.accent = 0x3B82F6;
+                s.accentFromArt = false;
+            }),
+            new Look("Toxic", "Glitchy green terminal", 0xA3E635, 0x15803D, s -> {
+                s.lyricFont = font("Consolas", "Courier New");
+                s.uppercase = true;
+                s.lyricColor = 0xD9F99D;
+                s.glow = 0.9f;
+                s.glowColor = 0x22C55E;
+                s.pulseColor = 0xBEF264;
+                s.appear = Appear.GLITCH;
+                s.beatParticles = Particles.GLOW;
+                s.accent = 0x22C55E;
+                s.accentFromArt = false;
+            }),
+            new Look("Ember", "Burns away when it's done", 0xFBBF24, 0xDC2626, s -> {
+                s.lyricFont = AUTO_FONT;
+                s.uppercase = true;
+                s.lyricColor = 0xFFEDD5;
+                s.outline = 0.05f;
+                s.outlineColor = 0x431407;
+                s.glow = 0.9f;
+                s.glowColor = 0xEA580C;
+                s.pulse = Pulse.ALL;
+                s.pulseColor = 0xFDBA74;
+                s.exit = Exit.BURN;
+                s.accent = 0xEA580C;
+                s.accentFromArt = false;
+            }),
+            new Look("Glacier", "Icy outline, slow and clear", 0xE0F2FE, 0x0EA5E9, s -> {
+                s.lyricColor = 0xF0F9FF;
+                s.outline = 0.06f;
+                s.outlineColor = 0x0369A1;
+                s.glow = 0.4f;
+                s.glowColor = 0x7DD3FC;
+                s.fadeMs = 500;
+                s.idle = Idle.FLOAT;
+                s.pulseColor = 0xBAE6FD;
+            }),
+            new Look("Royal", "Serif gold with a warm glow", 0xFDE68A, 0xB45309, s -> {
+                s.lyricFont = font("Georgia", "Times New Roman");
+                s.lyricColor = 0xFDE68A;
+                s.outline = 0.04f;
+                s.outlineColor = 0x78350F;
+                s.glow = 0.5f;
+                s.glowColor = 0xF59E0B;
+                s.letterSpacing = 0.04f;
+                s.pulseColor = 0xFFFFFF;
+                s.accent = 0xD97706;
+                s.accentFromArt = false;
+            }),
+            new Look("Bubblegum", "Bouncy pink, notes on the beat", 0xF9A8D4, 0xC084FC, s -> {
+                s.lyricColor = 0xFBCFE8;
+                s.glow = 0.6f;
+                s.glowColor = 0xF472B6;
+                s.appear = Appear.BOUNCE;
+                s.idle = Idle.WAVE;
+                s.pulse = Pulse.ALL;
+                s.pulseColor = 0xFFFFFF;
+                s.beatParticles = Particles.NOTES;
+            }),
+            new Look("Ghost", "Faint, slow, word by word", 0xF3F4F6, 0x4B5563, s -> {
+                s.lyricColor = 0xD1D5DB;
+                s.shadow = 0;
+                s.glow = 0.25f;
+                s.glowColor = 0xFFFFFF;
+                s.fadeMs = 700;
+                s.fadeOutMs = 1200;
+                s.fadeOut = FadeOut.WORDS;
+                s.idle = Idle.FLOAT;
+                s.pulse = Pulse.OFF;
+                s.beatParticles = Particles.OFF;
+                s.edgeGlow = 0;
+                s.dropEffect = false;
+            }),
+            new Look("Comic", "Bold, outlined and loud", 0xFDE047, 0xF97316, s -> {
+                s.lyricFont = font("Impact", "Arial Black");
+                s.uppercase = true;
+                s.lyricColor = 0xFDE047;
+                s.outline = 0.1f;
+                s.outlineColor = 0x111111;
+                s.shadow = 0.2f;
+                s.letterSpacing = 0.03f;
+                s.appear = Appear.POP;
+                s.exit = Exit.SCATTER;
+                s.pulseColor = 0xFFFFFF;
+            }),
+            new Look("Vapor", "Wide pastel letters, cyan glow", 0xE879F9, 0x22D3EE, s -> {
+                s.lyricFont = AUTO_FONT;
+                s.uppercase = true;
+                s.letterSpacing = 0.22f;
+                s.lyricSize = 0.75f;
+                s.lyricColor = 0xF5D0FE;
+                s.glow = 0.8f;
+                s.glowColor = 0x22D3EE;
+                s.idle = Idle.WAVE;
+                s.accent = 0xD946EF;
+                s.accentFromArt = false;
+            }),
+            new Look("Typewriter", "Typed out letter by letter", 0xFFFFFF, 0xA8A29E, s -> {
+                s.lyricFont = font("Courier New", "Consolas");
+                s.lyricColor = 0xF5F5F4;
+                s.layout = Layout.CENTERED;
+                s.appear = Appear.TYPEWRITER;
+                s.shadow = 0.4f;
+                s.floatUp = false;
+                s.pulse = Pulse.OFF;
+            }));
+
+    /** The first of these fonts that's installed, else the system UI font. */
+    private static String font(String... families) {
+        for (String f : families) if (TextArt.families().contains(f)) return f;
+        return AUTO_FONT;
+    }
+
+    /** Switches to a ready-made look, starting from the default look but keeping the user's own non-look settings. */
+    public static void applyLook(Look look) {
         Settings next = new Settings();
-        next.offsetMs = s.offsetMs;
-        next.musicSource = s.musicSource;
-        switch (name) {
-            case "Neon" -> {
-                next.lyricFont = AUTO_FONT;
-                next.glow = 1;
-                next.glowColor = 0xF472B6;
-                next.shadow = 0;
-                next.pulse = Pulse.ALL;
-                next.edgeGlow = 0.8f;
-                next.beatParticles = Particles.GLOW;
-                next.idle = Idle.WAVE;
-            }
-            case "Retro arcade" -> {
-                next.lyricFont = TextArt.families().contains("Consolas") ? "Consolas" : "Courier New";
-                next.uppercase = true;
-                next.lyricColor = 0xFDE68A;
-                next.outline = 0.08f;
-                next.letterSpacing = 0.06f;
-                next.appear = Appear.TYPEWRITER;
-                next.exit = Exit.SCATTER;
-                next.beatParticles = Particles.NOTES;
-                next.lyricSize = 0.85f;
-            }
-            case "Minimal" -> {
-                next.lyricFont = AUTO_FONT;
-                next.shadow = 0.3f;
-                next.lyricSize = 0.8f;
-                next.layout = Layout.CENTERED;
-                next.pulse = Pulse.OFF;
-                next.dropEffect = false;
-                next.edgeGlow = 0;
-                next.beatParticles = Particles.OFF;
-                next.floatUp = false;
-            }
-            case "Anime subtitles" -> {
-                next.lyricFont = AUTO_FONT;
-                next.placement = Placement.SCREEN;
-                next.screenY = 0.86f;
-                next.layout = Layout.SINGLE;
-                next.lyricSize = 0.6f;
-                next.outline = 0.12f;
-                next.shadow = 0;
-                next.reveal = Reveal.LINE;
-                next.pulse = Pulse.OFF;
-                next.edgeGlow = 0;
-                next.beatParticles = Particles.OFF;
-                next.floatUp = false;
-            }
-            default -> {} // "Handwritten" is the default look
-        }
+        next.offsetMs = current.offsetMs;
+        next.musicSource = current.musicSource;
+        next.look = look.name();
+        look.apply().accept(next);
         current = next;
         changed();
         save();

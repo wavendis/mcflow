@@ -48,9 +48,11 @@ public final class LyricsHud implements HudElement {
         /** Depth layer for parallax: the same for a whole row; staggered rows sit at two depths, other layouts at one. */
         final float layer;
         /** Angles (radians) in the line's own sphere frame, see {@link #onSphere}. */
-        final float across, up;
+        float across, up;
         /** Centre offset from the line's anchor in layout pixels (screen placement, and the pinned plane). */
-        final float lx, ly;
+        float lx, ly;
+        /** Its word's tilt (radians), turning the letter with it: drift layout. */
+        float tilt;
         /** This frame: screen position (null if behind) and how visible the spot is (0..1). */
         float[] screen;
         float view;
@@ -159,6 +161,13 @@ public final class LyricsHud implements HudElement {
     private static final double GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
     /** When fading out word by word, each word starts this much after the one before. */
     private static final long WORD_OUT_STAGGER_MS = 70;
+    /** Drift and pop layouts: the word sizes they pick from (x the normal size), and the drift's tilt (radians, either way). */
+    private static final float[] DRIFT_SIZES = {0.7f, 0.85f, 1f, 1.2f}, POP_SIZES = {0.75f, 1f, 1.35f, 1.8f};
+    private static final float DRIFT_TILT = 0.07f;
+    /** Drift layout: how wide a row may get, as a share of the screen's width. */
+    private static final float DRIFT_ROW = 0.28f;
+    /** Pop layout: how far from the anchor words may land (share of screen width / height). */
+    private static final float POP_REACH_X = 0.16f, POP_REACH_Y = 0.11f;
 
     /** Shown while the settings screen is open and nothing with lyrics is playing, so changes can be seen. */
     private static final List<Lyrics.Line> DEMO = Lyrics.parse("""
@@ -241,11 +250,14 @@ public final class LyricsHud implements HudElement {
             // a newer line is coming in where this one is: from the moment it starts showing, this one flows up out of
             // its way while it fades (a gentle ease-out over at least half a second, so it glides rather than jumps)
             float push = 0;
-            if (k + 1 < visible.size() && !(view.following && s.pvpScatter)) { // (scattered words just fade where they are)
+            // drift and pop fill the same patch of sky every line, so the old one fades as the next comes in instead
+            boolean scattered = s.layout == Settings.Layout.DRIFT || s.layout == Settings.Layout.POP;
+            long cut = k + 1 < visible.size() && scattered ? visible.get(k + 1).startMs() - s.fadeMs : Long.MAX_VALUE;
+            if (k + 1 < visible.size() && !(view.following && s.pvpScatter) && !scattered) { // (scattered words just fade where they are)
                 float t = Math.clamp((pos + s.fadeMs - visible.get(k + 1).startMs()) / (float) Math.max(PUSH_MS, 2 * s.fadeMs), 0f, 1f);
                 push = (1 - (1 - t) * (1 - t)) * view.lineHeight * (s.flowDown ? -1 : 1);
             }
-            drawLine(g, w, h, view, camera, pos, push);
+            drawLine(g, w, h, view, camera, pos, push, cut);
         }
         // drop: a quick white flash over everything
         float drop = s.dropEffect ? Beat.drop() : 0;
@@ -326,6 +338,8 @@ public final class LyricsHud implements HudElement {
         java.util.Collection<String> letters = GlyphCache.letters(texts);
         GlyphCache.prepare(letters, h * BIG_TEXT * s.lyricSize * RES);
         if (s.layout == Settings.Layout.CENTERED) GlyphCache.prepare(letters, h * SMALL_TEXT * s.lyricSize * RES);
+        float[] sizes = s.layout == Settings.Layout.DRIFT ? DRIFT_SIZES : s.layout == Settings.Layout.POP ? POP_SIZES : new float[0];
+        for (float f : sizes) if (f != 1) GlyphCache.prepare(letters, h * BIG_TEXT * s.lyricSize * f * RES);
     }
 
     private static long fadeOutTotal(Lyrics.Line line, Settings s) {
@@ -390,7 +404,7 @@ public final class LyricsHud implements HudElement {
      * Pinned: the text is a flat sign standing in the world; each letter is drawn in perspective, so it's seen at an
      * angle from the side and grows as you walk up to it. On screen: it just sits at a fixed spot.
      */
-    private void drawLine(GuiGraphics g, int w, int h, View v, Camera camera, long pos, float push) {
+    private void drawLine(GuiGraphics g, int w, int h, View v, Camera camera, long pos, float push, long cut) {
         Settings s = Settings.get();
         Settings.Placement mode = v.following ? Settings.Placement.PINNED : s.placement;
         boolean world3d = mode == Settings.Placement.PINNED && s.realWorld && WorldText.supported;
@@ -430,6 +444,12 @@ public final class LyricsHud implements HudElement {
             WordState word = gl.state;
             long appearAt = s.reveal == Settings.Reveal.LINE ? v.line.startMs() : gl.word.startMs();
             long leaveAt = v.line.endMs() + (s.fadeOut == Settings.FadeOut.WORDS ? gl.order * WORD_OUT_STAGGER_MS : 0);
+            // pop: each word starts fading as soon as the next one is sung, so only the newest is bright
+            List<Lyrics.Word> lineWords = v.line.words();
+            if (s.layout == Settings.Layout.POP && !v.following && gl.order + 1 < lineWords.size()) {
+                leaveAt = Math.min(leaveAt, lineWords.get(gl.order + 1).startMs());
+            }
+            leaveAt = Math.min(leaveAt, cut);
             float in = s.appear == Settings.Appear.TYPEWRITER
                     // letter by letter, left to right, each snapping in quickly
                     ? Math.clamp((pos + s.fadeMs - appearAt - (gl.lx - word.firstX) / (h * 0.035f) * TYPE_MS) / TYPE_MS, 0f, 1f)
@@ -469,7 +489,7 @@ public final class LyricsHud implements HudElement {
                 color = lerpColor(color, s.pulseColor, Math.min(1, beat * 0.7f * s.pulseStrength));
             }
             // the chosen animations, as extra offset (screen px), size and turn on top of everything else
-            float k = 1 - out, extraX = 0, extraY = 0, extraTurn = 0, extraSize = 1;
+            float k = 1 - out, extraX = 0, extraY = 0, extraTurn = gl.tilt, extraSize = 1;
             switch (s.appear) {
                 case BOUNCE -> extraSize *= easeOutBack(in);
                 case POP -> extraSize *= 1 + 0.6f * (1 - in) * (1 - in);
@@ -795,9 +815,99 @@ public final class LyricsHud implements HudElement {
                 placeRow(v, words.subList(0, split), big, firstSide * gap, firstSide, -rowGap / 2, 0.7f, nouns, vocals, counters, sink);
                 placeRow(v, words.subList(split, words.size()), big, -firstSide * gap, -firstSide, -rowGap / 2, 1.1f, nouns, vocals, counters, sink);
             }
+            case DRIFT -> drift(v, words, big, w, nouns, vocals, counters, sink);
+            case POP -> pop(v, words, big, w, h, nouns, vocals, counters, sink);
         }
         if (following && s.pvpScatter) scatter(v, h, s);
         return v;
+    }
+
+    /**
+     * Drift layout: the words flow into short rows like handwriting on a page, each word its own size, a little above
+     * or below the row and slightly tilted, and each row nudged sideways, so the line looks scribbled across the sky.
+     * Random but the same every time for a line, so changing a setting doesn't reshuffle it.
+     */
+    private void drift(View v, List<Lyrics.Word> words, float big, int w, boolean[] nouns, boolean[] vocals, int[] counters, LetterSink sink) {
+        Settings s = Settings.get();
+        java.util.Random r = seeded(words);
+        int n = words.size(), rows = 1;
+        float[] size = new float[n], width = new float[n], x = new float[n], rowEnd = new float[n];
+        int[] row = new int[n];
+        float at = 0;
+        for (int i = 0; i < n; i++) {
+            size[i] = big * DRIFT_SIZES[r.nextInt(DRIFT_SIZES.length)];
+            String text = s.uppercase ? words.get(i).text().toUpperCase(Locale.ROOT) : words.get(i).text();
+            width[i] = TextArt.lyricWidth(text, size[i] * RES) / (float) RES + s.letterSpacing * size[i] * (text.length() - 1);
+            if (at > 0 && at + width[i] > w * DRIFT_ROW) { // full: on to the next row
+                rows++;
+                at = 0;
+            }
+            row[i] = rows - 1;
+            x[i] = at;
+            rowEnd[row[i]] = at + width[i];
+            at += width[i] + TextArt.lyricWidth(" ", size[i] * RES) / (float) RES;
+        }
+        float ascent = TextArt.lyricAscent(big), rowGap = ascent * 1.25f;
+        float[] shift = new float[rows];
+        for (int k = 0; k < rows; k++) shift[k] = (r.nextFloat() - 0.5f) * big * 3;
+        v.lineHeight = rows * rowGap;
+        for (int i = 0; i < n; i++) {
+            float cx = x[i] - rowEnd[row[i]] / 2 + shift[row[i]] + width[i] / 2;
+            float baseline = (row[i] - (rows - 1) / 2f) * rowGap + ascent / 2 + (r.nextFloat() - 0.5f) * big * 0.3f;
+            int from = v.glyphs.size();
+            placeRow(v, words.subList(i, i + 1), size[i], Math.round(cx), 0, Math.round(baseline - TextArt.lyricAscent(size[i])),
+                    MEAN_LAYER, nouns, vocals, counters, sink);
+            tiltWord(v, from, (r.nextFloat() * 2 - 1) * DRIFT_TILT);
+        }
+    }
+
+    /**
+     * Pop layout: every word lands on its own spot around the anchor, at a random size (mostly normal, now and then
+     * big), never right on top of the word before; with each word fading once the next is sung, it reads one at a time.
+     */
+    private void pop(View v, List<Lyrics.Word> words, float big, int w, int h, boolean[] nouns, boolean[] vocals, int[] counters, LetterSink sink) {
+        java.util.Random r = seeded(words);
+        float lastX = Float.NaN, lastY = 0;
+        for (Lyrics.Word word : words) {
+            float f = r.nextFloat(), size = big * POP_SIZES[f < 0.35f ? 0 : f < 0.75f ? 1 : f < 0.92f ? 2 : 3];
+            float x = 0, y = 0;
+            for (int tries = 0; tries < 12; tries++) {
+                x = (r.nextFloat() * 2 - 1) * w * POP_REACH_X;
+                y = (r.nextFloat() * 2 - 1) * h * POP_REACH_Y;
+                if (Float.isNaN(lastX) || Math.hypot(x - lastX, y - lastY) > big * 2.5) break;
+            }
+            lastX = x;
+            lastY = y;
+            placeRow(v, List.of(word), size, Math.round(x), 0, Math.round(y - TextArt.lyricAscent(size) / 2), MEAN_LAYER, nouns, vocals, counters, sink);
+        }
+        v.lineHeight = h * POP_REACH_Y * 2;
+    }
+
+    /** The same random choices every time a line is laid out. */
+    private static java.util.Random seeded(List<Lyrics.Word> words) {
+        return new java.util.Random(words.isEmpty() ? 0 : words.getFirst().startMs() * 31 + words.getFirst().text().hashCode());
+    }
+
+    /** Turns the letters placed from {@code from} on (one word) by {@code angle} radians around their middle, as one piece. */
+    private static void tiltWord(View v, int from, float angle) {
+        List<Glyph> letters = v.glyphs.subList(from, v.glyphs.size());
+        if (letters.isEmpty()) return;
+        float cx = 0, cy = 0;
+        for (Glyph gl : letters) {
+            cx += gl.lx;
+            cy += gl.ly;
+        }
+        cx /= letters.size();
+        cy /= letters.size();
+        float cos = (float) Math.cos(angle), sin = (float) Math.sin(angle);
+        for (Glyph gl : letters) {
+            float dx = gl.lx - cx, dy = gl.ly - cy;
+            gl.lx = cx + dx * cos - dy * sin;
+            gl.ly = cy + dx * sin + dy * cos;
+            gl.up = (float) (-gl.ly / v.pixelsPerRadian); // the sphere angles follow, as in layout()'s sink
+            gl.across = (float) (gl.lx / v.pixelsPerRadian / Math.cos(gl.up));
+            gl.tilt = angle;
+        }
     }
 
     /** Takes a letter whose centre sits at a layout-pixel offset from the line's anchor (y down). */
